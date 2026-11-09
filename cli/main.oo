@@ -67,7 +67,9 @@ fn run_netdrv_selftest(dma: &DmaCap, mmio: &MmioCap, irq: &IrqCap) -> Bool {
     if qp.admitted == false || qp.qp_num != 66048 { return false; }
     let tsl: Int = oo_tsn_canfd_seal_gated(oo_cap_reg64_pack(1, 7, 0, tcaps), 1, 3, 1000000, 255, 703);
     if tsl <= 0 || oo_canfd_crc16_frame(703, 64) <= 0 || pktio_flow_hash("10.0.0.1:443:tcp") <= 0 { return false; }
-    let s0: WifiStation = wifi80211_scan_add(wifi80211_init(dma, mmio, 6), wifi80211_parse_beacon(0, 4096, 6, 0 - 42));
+    let sta0: WifiStation = wifi80211_init(dma, mmio, 6);
+    let beacon: WifiBeacon = wifi80211_parse_beacon(0, 4096, 6, 0 - 42);
+    let s0: WifiStation = wifi80211_associate(wifi80211_pspoll(wifi80211_scan_add(sta0, beacon), 2), beacon);
     if wifi80211_verify(s0) == false { return false; }
     let c0: BtHciController = bt_hci_set_state(bt_hci_init(dma, mmio, 1), 1);
     if bt_hci_verify(bt_hci_acl(bt_hci_set_state(bt_hci_evt(bt_hci_cmd(c0, 2053), 13), 2), 128)) == false { return false; }
