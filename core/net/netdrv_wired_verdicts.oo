@@ -1,0 +1,31 @@
+// # oodrv-net Wired Driver Verdicts
+//
+// Logline: Renders deterministic one-line PASS/FAIL verdicts for the wired
+//   network, RDMA, and automotive bus drivers.
+// Setup: Declared capability: None. Pure verdict formatting over driver
+//   self-test outcomes.
+// Beats:
+//   1. Emit "verb: PASS (detail)" on a verified run.
+//   2. Emit "verb: FAIL" on a refused or unverifiable run.
+//   3. Keep output deterministic for parity and det targets.
+
+pub fn netdrv_verdict(verb: String, ok: Bool, detail: String) -> String {
+    if ok { return verb + ": PASS (" + detail + ")"; }
+    return verb + ": FAIL";
+}
+
+pub fn netdrv_nic_verdict(tx: Int, rx: Int, committed: Bool) -> String {
+    let ok: Bool = tx == 1 && rx == 1 && committed;
+    return netdrv_verdict("nic", ok, "tx=" + tx.to_string() + " rx=" + rx.to_string());
+}
+
+pub fn netdrv_qp_verdict(qp_num: Int, posted: Int, admitted: Bool) -> String {
+    let ok: Bool = qp_num > 0 && posted > 0 && admitted;
+    return netdrv_verdict("rdma", ok, "qp=" + qp_num.to_string() + " posted=" + posted.to_string());
+}
+
+pub fn netdrv_bus_verdict(seal: Int, can_id: Int) -> String {
+    let ok: Bool = seal > 0 && can_id > 0;
+    return netdrv_verdict("tsn-canfd", ok, "seal=" + seal.to_string() + " can_id=" +
+        can_id.to_string());
+}

@@ -1,0 +1,55 @@
+// # IEEE 802.1Qbv Time-Sensitive Networking (TSN) & CAN-FD Arbitration
+//
+// Logline: Gate deterministic 802.1Qbv Time-Aware Shaper (TAS) Gate Control Lists (GCL) and CAN-FD BRS frames.
+//
+// Setup: Requires NetCap and TimeCap in CapReg64 plus PQC SHA3 sealing.
+//
+// Beats:
+//   1. Evaluate 802.1Qbv Time-Aware Shaper (TAS) cycle-time window and 8-queue Gate Control List (GCL) bitmask.
+//   2. Validate CAN-FD 64-byte payload Bit Rate Switch (BRS) and dominant 11/29-bit arbitration priority.
+//   3. Seal the TSN + CAN-FD real-time frame with CapReg64 and oo_pqc_sha3_round.
+
+import "oostd/sec/pqc.oo";
+import "oostd/sec/capreg.oo";
+
+pub fn oo_tsn_tas_gate_open(cycle_ns: Int, guard_band_ns: Int, gcl_mask: Int, traffic_class: Int) -> Int {
+    if cycle_ns <= 0 || guard_band_ns < 0 || guard_band_ns >= cycle_ns || traffic_class < 0 || traffic_class > 7 {
+        return 0;
+    }
+    if ((gcl_mask >> traffic_class) & 1) == 0 {
+        return 0;
+    }
+    return cycle_ns - guard_band_ns;
+}
+
+pub fn oo_canfd_brs_arbitrate(can_id_a: Int, can_id_b: Int, payload_len: Int, brs_enabled: Int) -> Int {
+    if can_id_a < 0 || can_id_b < 0 || payload_len < 0 || payload_len > 64 {
+        return -1;
+    }
+    let winner: Int = if can_id_a <= can_id_b { can_id_a } else { can_id_b };
+    if brs_enabled == 1 {
+        return (winner << 4) | 2;
+    }
+    return (winner << 4) | 1;
+}
+
+pub fn oo_tsn_canfd_seal(reg64: Int, epoch: Int, req_rights: Int, cycle_ns: Int, gcl_mask: Int, can_id: Int) -> Int {
+    let net_bit: Int = oo_cap_bit_index("NetCap");
+    let time_bit: Int = oo_cap_bit_index("TimeCap");
+    let req_caps: Int = (1 << net_bit) | (1 << time_bit);
+    if reg64 == 0 {
+        return 0;
+    }
+    if epoch < 0 || req_rights < 0 || req_rights > 255 {
+        return 0;
+    }
+    if !oo_cap_reg64_check(reg64, epoch, req_rights, req_caps) {
+        return 0;
+    }
+    let win_ns: Int = oo_tsn_tas_gate_open(cycle_ns, 500, gcl_mask, 7);
+    let arb: Int = oo_canfd_brs_arbitrate(can_id, can_id + 10, 64, 1);
+    if win_ns <= 0 || arb < 0 {
+        return 0;
+    }
+    return oo_pqc_sha3_round(reg64 ^ win_ns ^ arb, (can_id << 8) ^ epoch);
+}

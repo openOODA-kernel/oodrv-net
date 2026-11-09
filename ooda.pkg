@@ -1,0 +1,14 @@
+name=oodrv-net
+version=0.6.1
+layer=L1-kernel
+category=HW
+tags=net,nic,dma-ring,pktio,tls,pacing,rdma,rocev2,infiniband,qp,mr,rkey,lkey,wifi80211,bt-hci,wwan,mbim,qmi,tsn,canfd,802.1qbv,multicall,argv0
+upstream=ieee-802.11,bluetooth-hci-spec,mbim-qmi,can-fd,802.1qbv,ib-spec,rocev2
+status=shipped
+description=openOODA Ring-3 Network, RDMA, Wireless & Automotive Bus Driver Suite: zero-copy NIC RX/TX DMA rings, pktio TLS/pacing packet rings, RDMA/RoCEv2 QP & MR rkey/lkey capability guard, Wi-Fi 802.11, Bluetooth HCI, 5G/LTE WWAN, and TSN/CAN-FD (split from oodrv-io)
+caps=FsReadCap,FsWriteCap,DmaCap,MmioCap,IrqCap,FrameCap,NetCap,TcpCap,UdpCap,TimeCap
+deps=
+entry=cli/main.oo
+payload=cli/main.oo
+personas=oodrv-net,oodrv-rdma,oodrv-wireless,oodrv-bus
+dispatch=explicit-verb,persona-subcommand

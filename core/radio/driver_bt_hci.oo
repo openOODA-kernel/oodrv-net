@@ -1,0 +1,73 @@
+// # openOODA Bluetooth HCI Controller Driver
+//
+// Logline: Bluetooth HCI controller driver tracking command/event/ACL
+//   packet pools, SCO links, and controller state transitions.
+// Setup: Declared capabilities: DmaCap, MmioCap. Imports oostd sec/pqc
+//   for integrity sealing.
+// Beats:
+//   1. Initialize the controller with a bounded HCI identifier.
+//   2. Transition the controller state machine 0..5 fail-closed.
+//   3. Track command, event, and ACL pool occupancy with sealed records.
+
+import "oostd/sec/pqc.oo";
+
+type BtHciController = struct {
+    hci_id: Int,
+    state: Int,
+    cmd_pool: Int,
+    evt_pool: Int,
+    acl_pool: Int,
+    sco_links: Int,
+    seal: Int
+};
+
+pub fn bt_hci_init(dma: &DmaCap, mmio: &MmioCap, hci_id: Int) -> BtHciController {
+    let _dma: &DmaCap = dma;
+    let _mmio: &MmioCap = mmio;
+    let safe_id: Int = if hci_id < 0 || hci_id > 7 { 0 } else { hci_id };
+    return BtHciController { hci_id: safe_id, state: 0, cmd_pool: 0, evt_pool: 0, acl_pool: 0,
+        sco_links: 0, seal: 0 };
+}
+
+pub fn bt_hci_set_state(ctl: BtHciController, state: Int) -> BtHciController {
+    if state < 0 || state > 5 { return ctl; }
+    if state != ctl.state + 1 && state != ctl.state { return ctl; }
+    return BtHciController { hci_id: ctl.hci_id, state: state, cmd_pool: ctl.cmd_pool,
+        evt_pool: ctl.evt_pool, acl_pool: ctl.acl_pool, sco_links: ctl.sco_links, seal: ctl.seal };
+}
+
+pub fn bt_hci_cmd(ctl: BtHciController, opcode: Int) -> BtHciController {
+    if ctl.state <= 0 || opcode <= 0 || opcode > 65535 || ctl.cmd_pool >= 255 { return ctl; }
+    let seal: Int = oo_pqc_sha3_round(opcode, ctl.state + 1);
+    return BtHciController { hci_id: ctl.hci_id, state: ctl.state, cmd_pool: ctl.cmd_pool + 1,
+        evt_pool: ctl.evt_pool, acl_pool: ctl.acl_pool, sco_links: ctl.sco_links, seal: seal };
+}
+
+pub fn bt_hci_evt(ctl: BtHciController, evt_code: Int) -> BtHciController {
+    if ctl.state <= 0 || evt_code <= 0 || evt_code > 255 || ctl.evt_pool >= 255 { return ctl; }
+    return BtHciController { hci_id: ctl.hci_id, state: ctl.state, cmd_pool: ctl.cmd_pool,
+        evt_pool: ctl.evt_pool + 1, acl_pool: ctl.acl_pool, sco_links: ctl.sco_links,
+        seal: ctl.seal };
+}
+
+pub fn bt_hci_acl(ctl: BtHciController, handle: Int) -> BtHciController {
+    if ctl.state < 2 || handle <= 0 || handle > 4095 || ctl.acl_pool >= 1024 { return ctl; }
+    let seal2: Int = oo_pqc_sha3_round(ctl.seal, handle);
+    return BtHciController { hci_id: ctl.hci_id, state: ctl.state, cmd_pool: ctl.cmd_pool,
+        evt_pool: ctl.evt_pool, acl_pool: ctl.acl_pool + 1, sco_links: ctl.sco_links,
+        seal: seal2 };
+}
+
+pub fn bt_hci_sco(ctl: BtHciController, links: Int) -> BtHciController {
+    if links < 0 || links > 3 { return ctl; }
+    return BtHciController { hci_id: ctl.hci_id, state: ctl.state, cmd_pool: ctl.cmd_pool,
+        evt_pool: ctl.evt_pool, acl_pool: ctl.acl_pool, sco_links: links, seal: ctl.seal };
+}
+
+pub fn bt_hci_verify(ctl: BtHciController) -> Bool {
+    if ctl.hci_id < 0 || ctl.hci_id > 7 || ctl.state < 0 || ctl.state > 5 { return false; }
+    if ctl.cmd_pool < 0 || ctl.evt_pool < 0 || ctl.acl_pool < 0 || ctl.acl_pool > 1024 {
+        return false;
+    }
+    return ctl.sco_links >= 0 && ctl.sco_links <= 3;
+}

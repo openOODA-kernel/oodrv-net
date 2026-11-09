@@ -1,0 +1,73 @@
+// # openOODA RDMA Queue-Pair & Memory-Region Capability Guard
+//
+// Logline: Zero-copy RDMA / RoCEv2 / InfiniBand queue-pair and memory
+//   region guard admitting only rkey/lkey-validated operations.
+// Setup: Declared capability: NetCap, DmaCap. Imports oostd sec/capreg
+//   and sec/pqc primitives; fail-closed CapReg64 admit gate.
+// Beats:
+//   1. Pack the NetCap|DmaCap requirement mask and validate reg64/epoch/rights fail-closed.
+//   2. Admit a QP only when qp_num, protection domain, and MR keys are nonzero.
+//   3. Bind memory regions and post work requests under sealed guard records.
+
+import "oostd/sec/capreg.oo";
+import "oostd/sec/pqc.oo";
+
+type RdmaQpGuard = struct {
+    qp_num: Int,
+    pd_handle: Int,
+    mr_lkey: Int,
+    mr_rkey: Int,
+    posted: Int,
+    admitted: Bool,
+    seal: Int
+};
+
+pub fn rdma_qp_req_caps() -> Int {
+    return (1 << oo_cap_bit_index("NetCap")) | (1 << oo_cap_bit_index("DmaCap"));
+}
+
+pub fn rdma_qp_admit(reg64: Int, epoch: Int, req_rights: Int) -> Int {
+    if reg64 == 0 { return -13; }
+    if epoch < 0 { return -22; }
+    if req_rights < 0 || req_rights > 255 { return -22; }
+    let req_caps: Int = rdma_qp_req_caps();
+    if oo_cap_reg64_check(reg64, epoch, req_rights, req_caps) == false { return -13; }
+    return 0;
+}
+
+pub fn rdma_qp_empty() -> RdmaQpGuard {
+    return RdmaQpGuard { qp_num: 0, pd_handle: 0, mr_lkey: 0, mr_rkey: 0, posted: 0,
+        admitted: false, seal: 0 };
+}
+
+pub fn rdma_qp_admit_gated(reg64: Int, epoch: Int, req_rights: Int, qp_num: Int, pd_handle: Int,
+    mr_lkey: Int, mr_rkey: Int) -> RdmaQpGuard {
+    if rdma_qp_admit(reg64, epoch, req_rights) != 0 { return rdma_qp_empty(); }
+    if qp_num <= 0 || pd_handle <= 0 || mr_lkey == 0 || mr_rkey == 0 { return rdma_qp_empty(); }
+    let seal: Int = oo_pqc_sha3_round(reg64 ^ (qp_num << 8), mr_lkey ^ mr_rkey);
+    return RdmaQpGuard { qp_num: qp_num, pd_handle: pd_handle, mr_lkey: mr_lkey, mr_rkey: mr_rkey,
+        posted: 0, admitted: true, seal: seal };
+}
+
+pub fn rdma_qp_bind_mr(guard: RdmaQpGuard, lkey: Int, rkey: Int) -> RdmaQpGuard {
+    if guard.admitted == false || lkey == 0 || rkey == 0 { return guard; }
+    if lkey != guard.mr_lkey || rkey != guard.mr_rkey { return guard; }
+    let seal2: Int = oo_pqc_sha3_round(guard.seal, lkey + rkey);
+    return RdmaQpGuard { qp_num: guard.qp_num, pd_handle: guard.pd_handle, mr_lkey: guard.mr_lkey,
+        mr_rkey: guard.mr_rkey, posted: guard.posted, admitted: true, seal: seal2 };
+}
+
+pub fn rdma_qp_post_send(guard: RdmaQpGuard, wr_len: Int, rkey: Int) -> RdmaQpGuard {
+    if guard.admitted == false || wr_len <= 0 || wr_len > 1073741824 { return guard; }
+    if rkey != guard.mr_rkey { return guard; }
+    return RdmaQpGuard { qp_num: guard.qp_num, pd_handle: guard.pd_handle, mr_lkey: guard.mr_lkey,
+        mr_rkey: guard.mr_rkey, posted: guard.posted + 1, admitted: true,
+        seal: oo_pqc_sha3_round(guard.seal, wr_len) };
+}
+
+pub fn rdma_qp_verify(guard: RdmaQpGuard) -> Bool {
+    if guard.admitted == false { return false; }
+    if guard.qp_num <= 0 || guard.pd_handle <= 0 { return false; }
+    if guard.mr_lkey == 0 || guard.mr_rkey == 0 { return false; }
+    return guard.seal > 0;
+}

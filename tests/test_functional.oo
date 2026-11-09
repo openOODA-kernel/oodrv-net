@@ -1,0 +1,156 @@
+// # oodrv-net Axis-1 Positive Functional I/O Suite
+//
+// Logline: Happy-path NIC DMA rings, pktio batching, RDMA QP+MR guard,
+//   TSN/CAN-FD, Wi-Fi/BT/WWAN radio, real /tmp I/O, persona and theme assertions.
+// Setup: Imports the root anchor and fs pages; DmaCap, MmioCap, IrqCap,
+//   FsReadCap, FsWriteCap verified at compile time.
+// Beats:
+//   1. Exercise the 256-slot NIC RX/TX DMA ring, pktio ring batching, and RDMA guard.
+//   2. Exercise TSN/CAN-FD seals, Wi-Fi beacons, HCI pools, and WWAN bearers.
+//   3. Exercise real file/dir probes, a manifest round-trip, themes, and personas.
+
+import "anchor.oo";
+import "oostd/fs/os/fs.oo";
+import "core/fs/fsprobe.oo";
+import "core/fs/manifest.oo";
+import "core/fs/state.oo";
+import "core/net/driver_net_dma_ring.oo";
+import "core/net/pktio_ring.oo";
+import "core/net/rdma_qp_guard.oo";
+import "core/net/tsn_canfd.oo";
+import "core/radio/driver_wifi80211.oo";
+import "core/radio/driver_bt_hci.oo";
+import "core/radio/driver_wwan.oo";
+
+fn expect(cond: Bool, label: String) -> Bool {
+    if cond {
+        println("ok " + label);
+        return true;
+    }
+    println("FAIL " + label);
+    return false;
+}
+
+fn check_nic_pktio(dma_cap: &DmaCap, mmio_cap: &MmioCap) -> Int {
+    let mut n: Int = 0;
+    let ring0: NetDmaRing = net_dma_ring_init(dma_cap, mmio_cap, 4262461440, 2097152, 2101248, 256);
+    let txd: NetPacketDesc = net_packet_desc_new(268435456, 1514, 1, 8, 100);
+    let rxd: NetPacketDesc = net_packet_desc_new(272629760, 1500, 0, 1, 0);
+    let ring2: NetDmaRing = net_rx_poll_desc(net_tx_submit_desc(ring0, dma_cap, mmio_cap, txd),
+        dma_cap, rxd);
+    if expect(ring2.tx_packets == 1 && ring2.rx_packets == 1 && ring2.committed,
+        "01 NIC zero-copy TX submit under OODA turn + warrant, RX poll DD-bit") { n = n + 1; }
+    if expect(net_quorum_blackbox_verify(ring2, 48) && ring2.seal > 0,
+        "02 NIC quorum/blackbox audit trail seals the TX ring") { n = n + 1; }
+    let ncaps: Int = net_dma_req_caps() | (1 << oo_cap_bit_index("NetCap"));
+    let pk0: PktRing = pktio_open_gated(oo_cap_reg64_pack(1, 7, 0, ncaps), 1, 3, 64, true, 100, 200);
+    let pk2: PktRing = pktio_rx_drain(pktio_tx_batch(pk0, 8, 400), 4);
+    if expect(pk0.ring_id == 7 && pk0.tls_active && pk2.batched == 4 && pk2.head_idx == 4,
+        "03 pktio ring: gated open, batched TX, and partial RX drain") { n = n + 1; }
+    if expect(pktio_flow_hash("10.0.0.1:443:tcp") > 0 && pktio_pacing_bdp_bytes(100, 200) == 2500 &&
+        pktio_crc16_desc(7, 0) > 0,
+        "04 pktio FNV-1a flow hash, Q16.16 pacing BDP, and CRC16 descriptor tag") { n = n + 1; }
+    return n;
+}
+
+fn check_rdma_bus() -> Int {
+    let mut n: Int = 0;
+    let ncaps: Int = (1 << oo_cap_bit_index("NetCap")) | (1 << oo_cap_bit_index("DmaCap"));
+    let qp: RdmaQpGuard = rdma_qp_admit_gated(oo_cap_reg64_pack(1, 7, 0, ncaps), 1, 3, 66048, 7,
+        305419896, 2596069104);
+    let qp2: RdmaQpGuard = rdma_qp_post_send(rdma_qp_bind_mr(qp, 305419896, 2596069104), 4096,
+        2596069104);
+    if expect(qp.admitted && qp2.posted == 1 && rdma_qp_verify(qp2),
+        "05 RDMA QP+MR guard: admit, bind lkey/rkey, post send, verify") { n = n + 1; }
+    let tcaps: Int = ncaps | (1 << oo_cap_bit_index("TimeCap"));
+    let win: TsnTasWindow = oo_tsn_tas_window_new(1000000, 255, 4);
+    let seal: Int = oo_tsn_canfd_seal_gated(oo_cap_reg64_pack(1, 7, 0, tcaps), 1, 3, 1000000, 255,
+        703);
+    if expect(win.valid && seal > 0 && oo_tsn_canfd_verify(seal, 703),
+        "06 TSN TAS window + CAN-FD seal under NetCap|TimeCap admission") { n = n + 1; }
+    if expect(oo_canfd_crc16_frame(703, 64) > 0 && oo_canfd_crc16_frame(0, 64) == 0,
+        "07 CAN-FD CRC16 frame tag accepts a valid id and refuses id 0") { n = n + 1; }
+    return n;
+}
+
+fn check_radio(dma_cap: &DmaCap, mmio_cap: &MmioCap, irq_cap: &IrqCap) -> Int {
+    let mut n: Int = 0;
+    let sta0: WifiStation = wifi80211_init(dma_cap, mmio_cap, 6);
+    let beacon: WifiBeacon = wifi80211_parse_beacon(0, 4096, 6, 0 - 42);
+    let sta1: WifiStation = wifi80211_associate(wifi80211_pspoll(wifi80211_scan_add(sta0, beacon),
+        2), beacon);
+    if expect(sta1.scan_count == 1 && sta1.pspoll_queue == 2 && sta1.associated &&
+        wifi80211_verify(sta1),
+        "08 Wi-Fi 802.11 beacon parse, scan, PS-Poll queue, and association") { n = n + 1; }
+    let c0: BtHciController = bt_hci_set_state(bt_hci_init(dma_cap, mmio_cap, 1), 1);
+    let c1: BtHciController = bt_hci_set_state(bt_hci_evt(bt_hci_cmd(c0, 2053), 13), 2);
+    let c2: BtHciController = bt_hci_sco(bt_hci_acl(c1, 128), 1);
+    if expect(c2.cmd_pool == 1 && c2.evt_pool == 1 && c2.acl_pool == 1 && c2.sco_links == 1 &&
+        bt_hci_verify(c2), "09 Bluetooth HCI command/event/ACL pools and SCO link") { n = n + 1; }
+    let m0: WwanModem = wwan_init(mmio_cap, irq_cap, 1);
+    let m2: WwanModem = wwan_pdp_activate(wwan_register(wwan_queue(m0, 3), 2, 0 - 71), 8);
+    if expect(m2.cmd_queue == 1 && m2.reg_state == 2 && m2.pdp_bearers == 1 && wwan_verify(m2),
+        "10 WWAN MBIM/QMI queue, registration, and PDP bearer activation") { n = n + 1; }
+    return n;
+}
+
+fn check_fs_and_manifest(fs: &FsReadCap, fs_w: &FsWriteCap) -> Int {
+    let mut n: Int = 0;
+    let target: String = if fs_path_exists(fs, "/proc/version") { "/proc/version" } else { "ooda.pkg" };
+    let pf: NetFsProbe = netdrv_fs_probe(fs, target);
+    let pd: NetFsProbe = netdrv_fs_probe(fs, "/proc/self");
+    if expect(pf.kind == "file" && pd.kind == "dir",
+        "11 FsReadCap file and directory probes") { n = n + 1; }
+    let mp: String = "/tmp/oodrv_net_manifest.txt";
+    let wr: Result[Void, String] = fs_write_file(fs_w, mp, "1 0 12 3 0\n2 1 40 25 0\n3 4 7 9 2\n");
+    let m_ok: NetManifest = netdrv_manifest_load(fs, mp);
+    if expect(wr.is_err() == false && m_ok.code == 0 && m_ok.count == 3,
+        "12 manifest round-trip: write under FsWriteCap then load validates 3 records") { n = n + 1; }
+    let sp: String = "/tmp/oodrv_net_state.oot";
+    let wrc: Int = kstate_write(fs_w, sp, "test", "1.0");
+    let srd: Result[String, String] = fs_read_file(fs, sp);
+    let sbody: String = match srd { Ok(t) => t, Err(_) => "" };
+    if expect(wrc == 0 && str_index_of(sbody, "# kernel state") >= 0 && kstate_scan(fs, "/tmp") >= 1 &&
+        kstate_parent("/tmp/x/y.oot") == "/tmp/x",
+        "13 io: state snapshot write+readback+scan+parent helper") { n = n + 1; }
+    let st0: NetDrvContext = netdrv_init(1, 24576, 128);
+    let rec: NetDrvContext = netdrv_record_parse(1, 2, 3, 4, 5);
+    if expect(netdrv_verify(st0) && netdrv_record_desc(rec) == "Net descriptor: 1,2,3,4,5",
+        "14 net driver state machine and descriptor parser") { n = n + 1; }
+    return n;
+}
+
+fn check_persona_and_theme() -> Int {
+    let mut n: Int = 0;
+    let mut a1: List[String] = list_new();
+    a1 = list_push(a1, "status");
+    let d1: PersonaDispatch = persona_resolve("oodrv-net", a1);
+    let d2: PersonaDispatch = persona_resolve("oodrv-bus", a1);
+    if expect(d1.persona.name == "oodrv-net" && d2.persona.name == "oodrv-bus",
+        "15 multi-call persona dispatch for oodrv-net and oodrv-bus") { n = n + 1; }
+    let t_dark: OoThemePalette = ootheme_resolve("ooda-dark");
+    let mut a8: List[String] = list_new();
+    a8 = list_push(a8, "nic");
+    let d8: PersonaDispatch = persona_resolve("oodrv-net", a8);
+    if expect(ootheme_verify(t_dark) && ootheme_verify(ootheme_resolve("1982")) &&
+        ootheme_verify(ootheme_resolve("high-contrast")) && ootheme_verify(ootheme_resolve("no-color")) &&
+        d8.mode == "nic" && netdrv_verb_kind("wifi80211") == "wifi80211",
+        "16 all palettes seal-verify and driver verbs resolve") { n = n + 1; }
+    return n;
+}
+
+pub fn main(fs_r: &FsReadCap, fs_w: &FsWriteCap, dma_cap: &DmaCap, mmio_cap: &MmioCap,
+    irq_cap: &IrqCap, _args: List[String]) -> Result[Int, String] {
+    let mut passed: Int = 0;
+    passed = passed + check_nic_pktio(dma_cap, mmio_cap);
+    passed = passed + check_rdma_bus();
+    passed = passed + check_radio(dma_cap, mmio_cap, irq_cap);
+    passed = passed + check_fs_and_manifest(fs_r, fs_w);
+    passed = passed + check_persona_and_theme();
+    if passed != 16 {
+        println("FAIL: " + passed.to_string() + "/16 assertions");
+        return Err("verification failed");
+    }
+    println("PASS: 16/16 assertions");
+    return Ok(0);
+}

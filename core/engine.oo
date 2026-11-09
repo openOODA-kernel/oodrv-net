@@ -1,0 +1,107 @@
+// # oodrv-net Core State Machine & DMA/Queue Descriptor Tracker
+//
+// Logline: Tracks zero-copy NIC DMA rings, packet I/O ring flights,
+//   RDMA queue pairs, wireless link sessions, and CAN-FD bus frames.
+// Setup: Declared capability: None. Pure state transition engine with
+//   fail-closed validation and zero duplicated security boilerplate.
+// Beats:
+//   1. Declare NetDrvContext descriptor for network/radio/bus driver state.
+//   2. Initialize bounded state with ring depth capacity and capability rights masks.
+//   3. Execute state transition steps, monotonic rights attenuation, and record inspection parsing.
+//   4. Verify structural invariants and admit filesystem observations fail-closed.
+
+type NetDrvContext = struct {
+    instance_id: Int,
+    cap_mask: Int,
+    capacity: Int,
+    active_items: Int,
+    dma_transfers: Int,
+    is_ready: Bool
+};
+
+pub fn netdrv_bit_and(a: Int, b: Int) -> Int {
+    if a <= 0 || b <= 0 { return 0; }
+    return a & b;
+}
+
+pub fn netdrv_init(id: Int, mask: Int, cap_limit: Int) -> NetDrvContext {
+    let safe_id: Int = if id <= 0 { 1 } else { id };
+    let safe_mask: Int = if mask < 0 { 0 } else { mask };
+    let raw_cap: Int = if cap_limit <= 0 { 64 } else { cap_limit };
+    let safe_cap: Int = if raw_cap > 65536 { 65536 } else { raw_cap };
+    return NetDrvContext {
+        instance_id: safe_id,
+        cap_mask: safe_mask,
+        capacity: safe_cap,
+        active_items: 0,
+        dma_transfers: safe_id + safe_cap,
+        is_ready: true
+    };
+}
+
+pub fn netdrv_step(state: NetDrvContext, delta: Int, req_mask: Int) -> NetDrvContext {
+    if state.is_ready == false || delta <= 0 || req_mask <= 0 || state.active_items < 0 {
+        return state;
+    }
+    if netdrv_bit_and(state.cap_mask, req_mask) != req_mask {
+        return state;
+    }
+    let room: Int = state.capacity - state.active_items;
+    if delta > room {
+        return state;
+    }
+    return NetDrvContext {
+        instance_id: state.instance_id,
+        cap_mask: state.cap_mask,
+        capacity: state.capacity,
+        active_items: state.active_items + delta,
+        dma_transfers: state.dma_transfers + delta,
+        is_ready: true
+    };
+}
+
+pub fn netdrv_verify(state: NetDrvContext) -> Bool {
+    if state.is_ready == false { return false; }
+    if state.instance_id <= 0 || state.capacity <= 0 { return false; }
+    if state.active_items < 0 || state.active_items > state.capacity { return false; }
+    return state.dma_transfers > 0;
+}
+
+pub fn netdrv_observe(state: NetDrvContext, count: Int, bytes: Int, req_mask: Int) -> NetDrvContext {
+    if state.is_ready == false || count <= 0 || bytes < 0 || state.active_items < 0 || req_mask <= 0 {
+        return state;
+    }
+    if netdrv_bit_and(state.cap_mask, req_mask) != req_mask {
+        return state;
+    }
+    let room: Int = state.capacity - state.active_items;
+    if count > room { return state; }
+    return NetDrvContext {
+        instance_id: state.instance_id,
+        cap_mask: state.cap_mask,
+        capacity: state.capacity,
+        active_items: state.active_items + count,
+        dma_transfers: state.dma_transfers + (bytes / 4096) + 1,
+        is_ready: true
+    };
+}
+
+pub fn netdrv_record_parse(qid: Int, ring: Int, bytes: Int, descs: Int, flags: Int) -> NetDrvContext {
+    if qid <= 0 || ring < 0 || bytes < 0 || descs < 0 || flags < 0 {
+        return NetDrvContext { instance_id: 0, cap_mask: 0, capacity: 0, active_items: 0, dma_transfers: 0, is_ready: false };
+    }
+    return NetDrvContext {
+        instance_id: qid,
+        cap_mask: ring,
+        capacity: bytes,
+        active_items: descs,
+        dma_transfers: flags + 1,
+        is_ready: true
+    };
+}
+
+pub fn netdrv_record_desc(rec: NetDrvContext) -> String {
+    if rec.is_ready == false { return "netdrv-record: invalid"; }
+    return "Net descriptor: " + rec.instance_id.to_string() + "," + rec.cap_mask.to_string() + "," +
+        rec.capacity.to_string() + "," + rec.active_items.to_string() + "," + (rec.dma_transfers - 1).to_string();
+}

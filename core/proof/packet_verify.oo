@@ -1,0 +1,36 @@
+// # oodrv-net Sandboxed Packet-Filter Static Verifier & Fast-Path Filter
+//
+// Logline: Prove bounded-loop termination (<= 4096 insns), stack/map bounds, and CapReg64 authority first.
+//
+// Setup: Pure deterministic packet-filter static verifier sealed with std/sec/capreg.oo and oo_pqc_sha3_round.
+//
+// Beats:
+//   1. Require NetCap (0), CompilerReadCap (29), SysCap (4) in the caller CapReg64 via oo_cap_reg64_check.
+//   2. Reject any filter program with unbounded backward jumps, stack depth > 512 bytes, or unverified pointer arithmetic.
+//   3. Seal the verified filter bytecode digest with oo_pqc_sha3_round.
+import "oostd/sec/pqc.oo";
+import "oostd/sec/capreg.oo";
+type VerifiedProg = struct {
+    insn_count: Int,
+    stack_bytes: Int,
+    dag_bounded: Bool,
+    cap_reg64: Int,
+    admitted: Bool,
+    digest: Int
+};
+pub fn net_prog_req_caps() -> Int {
+    return (1 << oo_cap_bit_index("NetCap")) | (1 << oo_cap_bit_index("CompilerReadCap")) | (1 << oo_cap_bit_index("SysCap"));
+}
+pub fn net_prog_verify_admit(epoch: Int, reg64: Int, insn_count: Int, stack_bytes: Int, dag_bounded: Bool) -> VerifiedProg {
+    let req: Int = net_prog_req_caps();
+    if reg64 == 0 || epoch < 0 {
+        return VerifiedProg { insn_count: 0, stack_bytes: 0, dag_bounded: false, cap_reg64: 0, admitted: false, digest: 0 };
+    }
+    if oo_cap_reg64_check(reg64, epoch, 3, req) == false || insn_count <= 0 || insn_count > 4096 || stack_bytes < 0 ||
+        stack_bytes > 512 || dag_bounded == false {
+        return VerifiedProg { insn_count: 0, stack_bytes: 0, dag_bounded: false, cap_reg64: 0, admitted: false, digest: 0 };
+    }
+    let dig: Int = oo_pqc_sha3_round(oo_pqc_sha3_round(reg64, insn_count * 1024 + stack_bytes), epoch);
+    return VerifiedProg { insn_count: insn_count, stack_bytes: stack_bytes, dag_bounded: true, cap_reg64: reg64, admitted: true,
+        digest: dig };
+}

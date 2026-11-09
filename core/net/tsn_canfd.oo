@@ -1,0 +1,63 @@
+// # openOODA Automotive TSN / CAN-FD Bus Driver
+//
+// Logline: IEEE 802.1Qbv time-aware shaper gate-control lists and CAN-FD
+//   bit-rate-switch arbitration frames under NetCap|TimeCap admission.
+// Setup: Declared capability: NetCap, TimeCap. Imports oostd sec/capreg,
+//   sec/pqc, and core/io checksum primitives.
+// Beats:
+//   1. Admit TSN schedules only when reg64/epoch/rights validate fail-closed.
+//   2. Validate TAS gate windows and CAN-FD arbitration identifiers.
+//   3. Seal schedule and frame records with PQC and CRC16 integrity.
+
+import "oostd/sec/capreg.oo";
+import "oostd/sec/pqc.oo";
+import "oostd/core/io/checksum_grp/checksum_crc16.oo";
+
+type TsnTasWindow = struct {
+    cycle_ns: Int,
+    gcl_mask: Int,
+    open_slots: Int,
+    valid: Bool
+};
+
+pub fn oo_tsn_canfd_req_caps() -> Int {
+    return (1 << oo_cap_bit_index("NetCap")) | (1 << oo_cap_bit_index("TimeCap"));
+}
+
+pub fn oo_tsn_canfd_admit(reg64: Int, epoch: Int, req_rights: Int) -> Int {
+    if reg64 == 0 { return -13; }
+    if epoch < 0 { return -22; }
+    if req_rights < 0 || req_rights > 255 { return -22; }
+    let req_caps: Int = oo_tsn_canfd_req_caps();
+    if oo_cap_reg64_check(reg64, epoch, req_rights, req_caps) == false { return -13; }
+    return 0;
+}
+
+pub fn oo_tsn_tas_window_new(cycle_ns: Int, gcl_mask: Int, open_slots: Int) -> TsnTasWindow {
+    let ok: Bool = cycle_ns > 0 && cycle_ns <= 1000000000 && gcl_mask > 0 && gcl_mask <= 255 &&
+        open_slots >= 0 && open_slots <= 8;
+    return TsnTasWindow { cycle_ns: cycle_ns, gcl_mask: gcl_mask, open_slots: open_slots,
+        valid: ok };
+}
+
+pub fn oo_canfd_crc16_frame(can_id: Int, dlc: Int) -> Int {
+    if can_id <= 0 || can_id > 536870911 || dlc < 0 || dlc > 64 { return 0; }
+    let bytes: List[Int] = list_push(list_push(list_push(list_push(list_new(), can_id & 255),
+        (can_id >> 8) & 255), (can_id >> 16) & 255), dlc & 255);
+    return crc16_digest(crc16_update(crc16_new(), bytes));
+}
+
+pub fn oo_tsn_canfd_seal_gated(reg64: Int, epoch: Int, req_rights: Int, cycle_ns: Int,
+    gcl_mask: Int, can_id: Int) -> Int {
+    if oo_tsn_canfd_admit(reg64, epoch, req_rights) != 0 { return 0; }
+    let win: TsnTasWindow = oo_tsn_tas_window_new(cycle_ns, gcl_mask, 4);
+    if win.valid == false { return 0; }
+    let crc: Int = oo_canfd_crc16_frame(can_id, 64);
+    if crc <= 0 { return 0; }
+    return oo_pqc_sha3_round(reg64 ^ win.gcl_mask, crc ^ win.cycle_ns);
+}
+
+pub fn oo_tsn_canfd_verify(seal: Int, can_id: Int) -> Bool {
+    if seal <= 0 || can_id <= 0 || can_id > 536870911 { return false; }
+    return true;
+}

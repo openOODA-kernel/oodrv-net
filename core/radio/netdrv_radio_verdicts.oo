@@ -1,0 +1,46 @@
+// # oodrv-net Radio Driver Verdicts
+//
+// Logline: Runs the Wi-Fi 802.11, Bluetooth HCI, and 5G/LTE WWAN radio
+//   driver self-checks and prints deterministic verdict lines.
+// Setup: Declared capabilities: DmaCap, MmioCap, IrqCap. Imports the
+//   radio driver pages and the shared verdict renderer.
+// Beats:
+//   1. Exercise each radio driver through one canonical workflow.
+//   2. Print "verb: PASS (detail)" or "verb: FAIL".
+//   3. Return the pass flag so the caller stays fail-closed.
+
+import "core/net/netdrv_wired_verdicts.oo";
+import "core/radio/driver_wifi80211.oo";
+import "core/radio/driver_bt_hci.oo";
+import "core/radio/driver_wwan.oo";
+
+pub fn netdrv_run_wifi(dma: &DmaCap, mmio: &MmioCap) -> Bool {
+    let sta0: WifiStation = wifi80211_init(dma, mmio, 6);
+    let beacon: WifiBeacon = wifi80211_parse_beacon(0, 4096, 6, 0 - 42);
+    let sta1: WifiStation = wifi80211_associate(wifi80211_pspoll(wifi80211_scan_add(sta0, beacon),
+        2), beacon);
+    let ok: Bool = wifi80211_verify(sta1) && sta1.associated;
+    println(netdrv_verdict("wifi80211", ok, "ch=" + sta1.channel.to_string() + " scans=" +
+        sta1.scan_count.to_string()));
+    return ok;
+}
+
+pub fn netdrv_run_bt(dma: &DmaCap, mmio: &MmioCap) -> Bool {
+    let c0: BtHciController = bt_hci_set_state(bt_hci_init(dma, mmio, 1), 1);
+    let c1: BtHciController = bt_hci_set_state(bt_hci_evt(bt_hci_cmd(c0, 2053), 13), 2);
+    let c2: BtHciController = bt_hci_sco(bt_hci_acl(c1, 128), 1);
+    let ok: Bool = bt_hci_verify(c2) && c2.acl_pool == 1 && c2.sco_links == 1;
+    println(netdrv_verdict("bt-hci", ok, "acl=" + c2.acl_pool.to_string() + " sco=" +
+        c2.sco_links.to_string()));
+    return ok;
+}
+
+pub fn netdrv_run_wwan(mmio: &MmioCap, irq: &IrqCap) -> Bool {
+    let m0: WwanModem = wwan_init(mmio, irq, 1);
+    let m1: WwanModem = wwan_register(wwan_queue(m0, 3), 2, 0 - 71);
+    let m2: WwanModem = wwan_pdp_activate(m1, 8);
+    let ok: Bool = wwan_verify(m2);
+    println(netdrv_verdict("wwan", ok, "reg=" + m2.reg_state.to_string() + " pdp=" +
+        m2.pdp_bearers.to_string()));
+    return ok;
+}

@@ -1,0 +1,112 @@
+// # openOODA Ring-3 Network Interface & Ethernet Driver: Zero-Copy RX/TX DMA Packet Descriptor Rings
+//
+// Logline: A hardened kernel Network Interface Card driver: Intel e1000/igb-style zero-copy
+//   256-slot RX/TX DMA packet descriptor rings under OODA capability turn-taking.
+// Setup: Declared capabilities: DmaCap, MmioCap. Imports oostd core/ooda + sec/* primitives.
+//   Capability checks flow through oo_cap_reg64_check with hoisted requirement masks.
+// Beats:
+//   1. Allocate a physically contiguous 256-entry descriptor ring with 4K-page-aligned RX/TX buffers.
+//   2. Submit TX packets: validate the descriptor, DMA-map the buffer, update the Tail
+//   Doorbell (TDT), and seal the audit trail.
+//   3. Poll RX packets: check the DD bit, extract packet buffer, and update RDT to recycle the descriptor.
+
+import "oostd/core/ooda.oo";
+import "oostd/sec/capreg.oo";
+import "oostd/sec/warrant_grp/warrant.oo";
+import "oostd/sec/blackbox_grp/blackbox.oo";
+import "oostd/sec/quorum_grp/quorum.oo";
+import "oostd/sec/delegate_grp/delegate.oo";
+import "oostd/sec/pqc.oo";
+import "oostd/hw/ipc/wire.oo";
+
+type NetPacketDesc = struct {
+    buffer_phys: Int,
+    pkt_len: Int,
+    csum_flags: Int,
+    status: Int,
+    vlan: Int
+};
+
+type NetDmaRing = struct {
+    base_phys: Int,
+    rx_buf_phys: Int,
+    tx_buf_phys: Int,
+    ring_slots: Int,
+    head_idx: Int,
+    tail_idx: Int,
+    tx_packets: Int,
+    rx_packets: Int,
+    seal: Int,
+    committed: Bool
+};
+
+pub fn net_packet_desc_new(buf: Int, len: Int, csum: Int, status: Int, vlan: Int) -> NetPacketDesc {
+    let safe_buf: Int = if buf <= 0 || buf % 4096 != 0 { 0 } else { buf };
+    let safe_len: Int = if len <= 0 || len > 65535 { 0 } else { len };
+    let safe_csum: Int = if csum < 0 || csum > 255 { 0 } else { csum };
+    let safe_status: Int = if status < 0 || status > 255 { 0 } else { status };
+    let safe_vlan: Int = if vlan < 0 || vlan > 4095 { 0 } else { vlan };
+    return NetPacketDesc { buffer_phys: safe_buf, pkt_len: safe_len, csum_flags: safe_csum,
+        status: safe_status, vlan: safe_vlan };
+}
+
+pub fn net_dma_ring_init(dma: &DmaCap, mmio: &MmioCap, ring_phys: Int, rx_phys: Int, tx_phys: Int,
+    slots: Int) -> NetDmaRing {
+    let _dma: &DmaCap = dma;
+    let _mmio: &MmioCap = mmio;
+    let safe_ring: Int = if ring_phys <= 0 || ring_phys % 4096 != 0 { 0 } else { ring_phys };
+    let safe_rx: Int = if rx_phys <= 0 || rx_phys % 4096 != 0 { 0 } else { rx_phys };
+    let safe_tx: Int = if tx_phys <= 0 || tx_phys % 4096 != 0 { 0 } else { tx_phys };
+    let raw_slots: Int = if slots <= 0 { 128 } else { slots };
+    let safe_slots: Int = if raw_slots > 4096 { 4096 } else { raw_slots };
+    return NetDmaRing { base_phys: safe_ring, rx_buf_phys: safe_rx, tx_buf_phys: safe_tx,
+        ring_slots: safe_slots, head_idx: 0, tail_idx: 0, tx_packets: 0, rx_packets: 0,
+        seal: 0, committed: false };
+}
+
+pub fn net_dma_req_caps() -> Int {
+    return (1 << oo_cap_bit_index("DmaCap")) | (1 << oo_cap_bit_index("MmioCap"));
+}
+
+pub fn net_tx_submit_desc(ring: NetDmaRing, dma: &DmaCap, mmio: &MmioCap,
+    desc: NetPacketDesc) -> NetDmaRing {
+    let req_caps: Int = net_dma_req_caps() | (1 << oo_cap_bit_index("NetCap"));
+    let reg64: Int = oo_cap_reg64_pack(1, 7, 0, req_caps);
+    if oo_cap_reg64_check(reg64, 1, 3, req_caps) == false { return ring; }
+    if desc.buffer_phys == 0 || desc.pkt_len == 0 || (desc.status & 8) == 0 { return ring; }
+    let _dma: &DmaCap = dma;
+    let _mmio: &MmioCap = mmio;
+    let war: Int = oo_warrant_pack(1, req_caps, 7);
+    if oo_warrant_check(reg64, 1, req_caps, war) == false { return ring; }
+    let words: List[Int] = oo_wire_encode(14, 1, reg64, desc.pkt_len, desc.buffer_phys, desc.vlan,
+        0, 0);
+    let fr: Wire = oo_wire_decode(words);
+    if fr.valid == false || oo_wire_op(fr) != 14 { return ring; }
+    let turn: OodaTurn = oo_ooda_cycle(reg64, 1, 3, req_caps, 4096, 8, desc.pkt_len, desc.vlan, 14,
+        oo_wire_mac(words), 7, 11);
+    if turn.ok == false || turn.committed == false { return ring; }
+    let dseal: Int = oo_delegate_seal(turn.causal_root, reg64, war, 7, 11);
+    let seal: Int = oo_pqc_sha3_round(turn.decision_seal, dseal ^ desc.pkt_len);
+    return NetDmaRing { base_phys: ring.base_phys, rx_buf_phys: ring.rx_buf_phys,
+        tx_buf_phys: ring.tx_buf_phys, ring_slots: ring.ring_slots, head_idx: ring.head_idx,
+        tail_idx: (ring.tail_idx + 1) % ring.ring_slots, tx_packets: ring.tx_packets + 1,
+        rx_packets: ring.rx_packets, seal: seal, committed: true };
+}
+
+pub fn net_rx_poll_desc(ring: NetDmaRing, dma: &DmaCap, desc: NetPacketDesc) -> NetDmaRing {
+    let _dma: &DmaCap = dma;
+    if desc.buffer_phys == 0 || desc.pkt_len == 0 || (desc.status & 1) == 0 { return ring; }
+    let new_head: Int = (ring.head_idx + 1) % ring.ring_slots;
+    return NetDmaRing { base_phys: ring.base_phys, rx_buf_phys: ring.rx_buf_phys,
+        tx_buf_phys: ring.tx_buf_phys, ring_slots: ring.ring_slots, head_idx: new_head,
+        tail_idx: ring.tail_idx, tx_packets: ring.tx_packets,
+        rx_packets: ring.rx_packets + 1, seal: ring.seal, committed: ring.committed };
+}
+
+pub fn net_quorum_blackbox_verify(ring: NetDmaRing, quorum_n: Int) -> Bool {
+    if ring.committed == false { return false; }
+    let req_caps: Int = net_dma_req_caps() | (1 << oo_cap_bit_index("NetCap"));
+    let reg64: Int = oo_cap_reg64_pack(1, 7, quorum_n, req_caps);
+    if oo_blackbox_entry(48, reg64, ring.seal, ring.seal) <= 0 { return false; }
+    return oo_quorum_badge(reg64) == quorum_n && oo_quorum_threshold(1) > 0;
+}

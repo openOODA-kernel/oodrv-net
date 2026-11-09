@@ -1,0 +1,215 @@
+// # oodrv-net Axis-2 Negative-Trust Refusal Suite
+//
+// Logline: Capability, bounds, traversal, and adversarial-input refusal assertions for oodrv-net.
+// Setup: Imports the root anchor, fs pages, and every gated driver page;
+//   every check expects fail-closed behavior.
+// Beats:
+//   1. Exercise the reg64 admit gate: zero reg, stale epoch, missing cap bit, out-of-range rights, gated empty.
+//   2. Refuse misaligned/oversized NIC descriptors, pktio over-drain, and RDMA key mismatch.
+//   3. Refuse bad beacons, HCI state skips, WWAN bounds, TAS windows, and traversal/persona faults.
+
+import "anchor.oo";
+import "oostd/sec/capreg.oo";
+import "oostd/fs/os/fs.oo";
+import "core/fs/manifest.oo";
+import "core/fs/state.oo";
+import "core/fs/gate.oo";
+import "core/net/driver_net_dma_ring.oo";
+import "core/net/pktio_ring.oo";
+import "core/net/rdma_qp_guard.oo";
+import "core/net/tsn_canfd.oo";
+import "core/radio/driver_wifi80211.oo";
+import "core/radio/driver_bt_hci.oo";
+import "core/radio/driver_wwan.oo";
+
+fn expect(cond: Bool, label: String) -> Bool {
+    if cond {
+        println("ok " + label);
+        return true;
+    }
+    println("FAIL " + label);
+    return false;
+}
+
+fn check_reg64_gate() -> Int {
+    let mut n: Int = 0;
+    let ncaps: Int = (1 << oo_cap_bit_index("NetCap")) | (1 << oo_cap_bit_index("DmaCap"));
+    if expect(rdma_qp_admit(oo_cap_reg64_pack(1, 7, 0, ncaps), 1, 3) == 0,
+        "01 negative-trust: valid reg64 admits the gate") { n = n + 1; }
+    if expect(rdma_qp_admit(0, 1, 3) == 0 - 13, "02 negative-trust: zero reg64 fails closed") { n = n + 1; }
+    if expect(rdma_qp_admit(oo_cap_reg64_pack(1, 7, 0, ncaps), 99, 3) == 0 - 13,
+        "03 negative-trust: stale epoch fails closed") { n = n + 1; }
+    if expect(rdma_qp_admit(oo_cap_reg64_pack(1, 7, 0, 0), 1, 3) == 0 - 13,
+        "04 negative-trust: missing cap bit fails closed") { n = n + 1; }
+    if expect(rdma_qp_admit(oo_cap_reg64_pack(1, 7, 0, ncaps), 1, 999) == 0 - 22,
+        "05 negative-trust: out-of-range rights fails closed") { n = n + 1; }
+    let denied: RdmaQpGuard = rdma_qp_admit_gated(0, 1, 3, 66048, 7, 305419896, 2596069104);
+    if expect(denied.admitted == false && denied.qp_num == 0 && denied.seal == 0,
+        "06 negative-trust: gated entry returns the empty value on deny") { n = n + 1; }
+    return n;
+}
+
+fn check_dma_bounds(dma_cap: &DmaCap, mmio_cap: &MmioCap) -> Int {
+    let mut n: Int = 0;
+    let ring0: NetDmaRing = net_dma_ring_init(dma_cap, mmio_cap, 4262461440, 2097152, 2101248, 256);
+    let bad_tx: NetPacketDesc = net_packet_desc_new(4095, 1514, 1, 8, 100);
+    let no_eop: NetPacketDesc = net_packet_desc_new(268435456, 1514, 1, 1, 100);
+    let r1: NetDmaRing = net_tx_submit_desc(net_tx_submit_desc(ring0, dma_cap, mmio_cap, bad_tx),
+        dma_cap, mmio_cap, no_eop);
+    if expect(r1.tx_packets == 0,
+        "07 adversarial: misaligned phys and missing-EOP NIC descriptors refused") { n = n + 1; }
+    let no_dd: NetPacketDesc = net_packet_desc_new(272629760, 1500, 0, 8, 0);
+    let r2: NetDmaRing = net_rx_poll_desc(r1, dma_cap, no_dd);
+    if expect(r2.rx_packets == 0,
+        "08 adversarial: RX descriptor without the DD bit refused") { n = n + 1; }
+    let san: NetPacketDesc = net_packet_desc_new(272629760, 70000, 300, 8, 5000);
+    if expect(san.pkt_len == 0 && san.csum_flags == 0 && san.vlan == 0,
+        "09 adversarial: oversized length, csum flags, and VLAN id sanitized") { n = n + 1; }
+    let mis: NetDmaRing = net_dma_ring_init(dma_cap, mmio_cap, 4097, 2097152, 2101248, 99999);
+    if expect(mis.base_phys == 0 && mis.ring_slots == 4096,
+        "10 adversarial: misaligned ring phys zeroed and slot ceiling clamped") { n = n + 1; }
+    let ncaps: Int = net_dma_req_caps() | (1 << oo_cap_bit_index("NetCap"));
+    let pk_denied: PktRing = pktio_open_gated(0, 1, 3, 64, true, 100, 200);
+    let pk_stale: PktRing = pktio_open_gated(oo_cap_reg64_pack(1, 7, 0, ncaps), 99, 3, 64, true,
+        100, 200);
+    if expect(pk_denied.ring_id == 0 && pk_stale.ring_id == 0,
+        "11 negative-trust: pktio open refuses zero reg64 and stale epoch") { n = n + 1; }
+    let pk4: PktRing = pktio_rx_drain(pktio_tx_batch(pktio_open_gated(oo_cap_reg64_pack(1, 7, 0,
+        ncaps), 1, 3, 64, true, 100, 200), 4, 400), 5);
+    if expect(pk4.batched == 4 && pktio_tx_batch(pk_denied, 4, 400).batched == 0,
+        "12 adversarial: pktio over-drain and batch on a denied ring refused") { n = n + 1; }
+    return n;
+}
+
+fn check_radio_bus_refusals(dma_cap: &DmaCap, mmio_cap: &MmioCap, irq_cap: &IrqCap) -> Int {
+    let mut n: Int = 0;
+    let sta0: WifiStation = wifi80211_init(dma_cap, mmio_cap, 6);
+    let bad_b: WifiBeacon = wifi80211_parse_beacon(0, 4096, 99, 0 - 42);
+    let bad_r: WifiBeacon = wifi80211_parse_beacon(0, 4096, 6, 0 - 120);
+    if expect(bad_b.valid == false && bad_r.valid == false && wifi80211_scan_add(sta0,
+        bad_b).scan_count == 0, "13 adversarial: bad channel and RSSI beacons refused") { n = n + 1; }
+    let ok_b: WifiBeacon = wifi80211_parse_beacon(0, 4096, 6, 0 - 42);
+    let sta9: WifiStation = wifi80211_pspoll(wifi80211_associate(sta0, ok_b), 9);
+    if expect(sta9.associated == false && sta9.pspoll_queue == 0,
+        "14 adversarial: associate without scan and oversized PS-Poll queue refused") { n = n + 1; }
+    let c0: BtHciController = bt_hci_init(dma_cap, mmio_cap, 1);
+    let c_skip: BtHciController = bt_hci_set_state(c0, 2);
+    let c_acl: BtHciController = bt_hci_acl(bt_hci_set_state(c0, 1), 128);
+    if expect(c_skip.state == 0 && c_acl.acl_pool == 0 && bt_hci_sco(c0, 4).sco_links == 0,
+        "15 adversarial: HCI state skip, early ACL, and oversized SCO refused") { n = n + 1; }
+    let m0: WwanModem = wwan_init(mmio_cap, irq_cap, 1);
+    let m_q: WwanModem = wwan_queue(m0, 300);
+    let m_r: WwanModem = wwan_register(m0, 3, 0 - 71);
+    let m_p: WwanModem = wwan_pdp_activate(m0, 8);
+    if expect(m_q.cmd_queue == 0 && m_r.reg_state == 0 && m_p.pdp_bearers == 0,
+        "16 adversarial: WWAN command bound, registration skip, and early PDP refused") { n = n + 1; }
+    let w0: TsnTasWindow = oo_tsn_tas_window_new(0, 255, 4);
+    let w1: TsnTasWindow = oo_tsn_tas_window_new(1000000, 256, 4);
+    let tcaps: Int = (1 << oo_cap_bit_index("NetCap")) | (1 << oo_cap_bit_index("TimeCap"));
+    if expect(w0.valid == false && w1.valid == false && oo_tsn_canfd_seal_gated(0, 1, 3, 1000000,
+        255, 703) == 0, "17 adversarial: invalid TAS windows and zero-reg64 TSN seal refused") {
+        n = n + 1; }
+    if expect(oo_canfd_crc16_frame(536870912, 64) == 0 && oo_canfd_crc16_frame(703, 65) == 0,
+        "18 adversarial: 29-bit CAN id overflow and DLC beyond 64 refused") { n = n + 1; }
+    return n;
+}
+
+fn check_path_and_persona(fs_r: &FsReadCap, fs_w: &FsWriteCap) -> Int {
+    let mut n: Int = 0;
+    let trav: String = ".." + "/cwe22_escape.oot";
+    if expect(kstate_write(fs_w, trav, "test", "1.0") == 0 - 2 && kstate_scan(fs_r, trav) == 0 - 2,
+        "19 negative-trust: traversal state path refused before the filesystem") { n = n + 1; }
+    let bp: String = "/tmp/oodrv_net_bad_manifest.txt";
+    let bwr: Result[Void, String] = fs_write_file(fs_w, bp, "1 0 12 3 0\nbad line here\n");
+    let m_trav: NetManifest = netdrv_manifest_load(fs_r, trav);
+    let m_bad: NetManifest = netdrv_manifest_load(fs_r, bp);
+    let m_gone: NetManifest = netdrv_manifest_load(fs_r, "/nonexistent-ooda-manifest");
+    if expect(m_trav.code == 23 && m_gone.code == 20 && bwr.is_err() == false && m_bad.code == 22 &&
+        kstate_write(fs_w, "", "test", "1.0") == 30,
+        "20 negative-trust: manifest refuses traversal/missing/malformed, empty path fails closed") {
+        n = n + 1; }
+    let mut a1: List[String] = list_new();
+    a1 = list_push(a1, "--persona");
+    let d_miss: PersonaDispatch = persona_resolve("oodrv-net", a1);
+    let mut a2: List[String] = list_new();
+    a2 = list_push(a2, "--persona=oodrv-net");
+    let d_eq: PersonaDispatch = persona_resolve("oodrv-net", a2);
+    let mut a3: List[String] = list_new();
+    a3 = list_push(a3, "--list-personas");
+    let d_list: PersonaDispatch = persona_resolve("oodrv-net", a3);
+    if expect(d_miss.mode == "usage" && d_eq.mode == "usage" && d_list.mode == "usage",
+        "21 negative-trust: --persona, --persona=, and --list-personas refused with usage fault") {
+        n = n + 1; }
+    let mut a4: List[String] = list_new();
+    a4 = list_push(a4, "status");
+    a4 = list_push(a4, "verify");
+    let d_conf: PersonaDispatch = persona_resolve("oodrv-net", a4);
+    let mut a5: List[String] = list_new();
+    a5 = list_push(a5, "--bogus-flag-zzz");
+    let d_unk: PersonaDispatch = persona_resolve("oodrv-net", a5);
+    if expect(d_conf.mode == "conflict" && d_conf.action == "error" && d_unk.action == "error",
+        "22 negative-trust: conflicting verbs and unknown flags refused") { n = n + 1; }
+    let mut a6: List[String] = list_new();
+    a6 = list_push(a6, ".." + "/x");
+    let mut a7: List[String] = list_new();
+    a7 = list_push(a7, "clean-arg");
+    if expect(oodrv_net_args_refused(a6) && oodrv_net_args_refused(a7) == false,
+        "23 negative-trust: traversal arg refused, clean arg admitted") { n = n + 1; }
+    if expect(kstate_parent("/x.oot") == "/" && kstate_parent("a/b.oot") == "a" &&
+        kstate_parent("solo.oot") == ".",
+        "24 edge: parent derivation for root-level, relative, and flat state paths") { n = n + 1; }
+    return n;
+}
+
+fn check_engine_and_gated(dma_cap: &DmaCap, mmio_cap: &MmioCap) -> Int {
+    let mut n: Int = 0;
+    let st1: NetDrvContext = netdrv_observe(netdrv_init(7, 15, 4), 3, 12288, 3);
+    let st_storm: NetDrvContext = netdrv_observe(st1, 2, 65536, 3);
+    if expect(st1.active_items == 3 && st_storm.active_items == 3 &&
+        st_storm.dma_transfers == st1.dma_transfers,
+        "25 interrupt storm: DMA observation flood past bounded capacity refused") { n = n + 1; }
+    let stp1: NetDrvContext = netdrv_step(netdrv_init(9, 3, 4), 2, 3);
+    let stp_over: NetDrvContext = netdrv_step(stp1, 3, 3);
+    let stp_mask: NetDrvContext = netdrv_step(stp1, 1, 4);
+    if expect(stp1.active_items == 2 && stp_over.active_items == 2 && stp_mask.active_items == 2,
+        "26 state-machine: netdrv_step refuses overflow and missing mask bit") { n = n + 1; }
+    let qp0: RdmaQpGuard = rdma_qp_empty();
+    let qp_lk: RdmaQpGuard = rdma_qp_admit_gated(oo_cap_reg64_pack(1, 7, 0, rdma_qp_req_caps()),
+        1, 3, 66048, 7, 0, 2596069104);
+    let qp_qn: RdmaQpGuard = rdma_qp_admit_gated(oo_cap_reg64_pack(1, 7, 0, rdma_qp_req_caps()),
+        1, 3, 0, 7, 305419896, 2596069104);
+    if expect(rdma_qp_verify(qp0) == false && qp_lk.admitted == false && qp_qn.admitted == false,
+        "27 negative-trust: zero lkey and zero qp_num refused at RDMA admit") { n = n + 1; }
+    let ncaps: Int = rdma_qp_req_caps();
+    let qp_ok: RdmaQpGuard = rdma_qp_admit_gated(oo_cap_reg64_pack(1, 7, 0, ncaps), 1, 3, 66048, 7,
+        305419896, 2596069104);
+    let qp_wr: RdmaQpGuard = rdma_qp_post_send(qp_ok, 4096, 111);
+    let qp_bd: RdmaQpGuard = rdma_qp_bind_mr(qp_ok, 111, 222);
+    if expect(qp_wr.posted == 0 && qp_bd.seal == qp_ok.seal && rdma_qp_post_send(qp0, 4096,
+        2596069104).posted == 0, "28 adversarial: wrong rkey post and mismatched MR bind refused") {
+        n = n + 1; }
+    let rec_bad: NetDrvContext = netdrv_record_parse(0, 0, 0, 0, 0);
+    if expect(rec_bad.is_ready == false && netdrv_record_desc(rec_bad) == "netdrv-record: invalid",
+        "29 adversarial: malformed manifest record refused with the invalid descriptor") { n = n + 1; }
+    let clamp: NetDrvContext = netdrv_init(0 - 1, 0 - 1, 99999999);
+    if expect(clamp.instance_id == 1 && clamp.cap_mask == 0 && clamp.capacity == 65536 &&
+        netdrv_verify(clamp), "30 adversarial: hostile init params clamped into safe bounds") {
+        n = n + 1; }
+    return n;
+}
+
+pub fn main(fs_r: &FsReadCap, fs_w: &FsWriteCap, dma_cap: &DmaCap, mmio_cap: &MmioCap,
+    irq_cap: &IrqCap, _args: List[String]) -> Result[Int, String] {
+    let mut passed: Int = 0;
+    passed = passed + check_reg64_gate();
+    passed = passed + check_dma_bounds(dma_cap, mmio_cap);
+    passed = passed + check_radio_bus_refusals(dma_cap, mmio_cap, irq_cap);
+    passed = passed + check_path_and_persona(fs_r, fs_w);
+    passed = passed + check_engine_and_gated(dma_cap, mmio_cap);
+    if passed != 30 {
+        println("FAIL: " + passed.to_string() + "/30 assertions");
+        return Err("verification failed");
+    }
+    println("PASS: 30/30 assertions");
+    return Ok(0);
+}

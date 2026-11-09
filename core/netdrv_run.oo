@@ -1,0 +1,90 @@
+// # oodrv-net Driver Verb Runner
+//
+// Logline: Executes the nic, pktio, rdma, tsn-canfd, wifi80211, bt-hci,
+//   and wwan driver verbs and prints their verdict lines.
+// Setup: Declared capabilities: DmaCap, MmioCap, IrqCap. Imports the
+//   wired and radio driver pages.
+// Beats:
+//   1. Classify the verb and run the matching driver self-check.
+//   2. Emit a deterministic "verb: PASS (...)" or "verb: FAIL" line.
+//   3. Return 0 on pass, 1 on fail, so the CLI stays fail-closed.
+
+import "core/net/driver_net_dma_ring.oo";
+import "core/net/pktio_ring.oo";
+import "core/net/rdma_qp_guard.oo";
+import "core/net/tsn_canfd.oo";
+import "core/net/netdrv_wired_verdicts.oo";
+import "core/radio/driver_wifi80211.oo";
+import "core/radio/driver_bt_hci.oo";
+import "core/radio/driver_wwan.oo";
+import "core/radio/netdrv_radio_verdicts.oo";
+import "oostd/sec/capreg.oo";
+
+pub fn netdrv_verb_kind(mode: String) -> String {
+    if mode == "nic" { return "nic"; }
+    if mode == "pktio" { return "pktio"; }
+    if mode == "rdma" { return "rdma"; }
+    if mode == "tsn-canfd" { return "tsn-canfd"; }
+    if mode == "wifi80211" { return "wifi80211"; }
+    if mode == "bt-hci" { return "bt-hci"; }
+    if mode == "wwan" { return "wwan"; }
+    return "";
+}
+
+fn netdrv_ncaps() -> Int {
+    return net_dma_req_caps() | (1 << oo_cap_bit_index("NetCap"));
+}
+
+fn netdrv_reg64(caps: Int) -> Int {
+    return oo_cap_reg64_pack(1, 7, 0, caps);
+}
+
+fn netdrv_run_nic(dma: &DmaCap, mmio: &MmioCap) -> Bool {
+    let ring: NetDmaRing = net_dma_ring_init(dma, mmio, 4262461440, 2097152, 2101248, 256);
+    let tx_desc: NetPacketDesc = net_packet_desc_new(268435456, 1514, 1, 8, 100);
+    let rx_desc: NetPacketDesc = net_packet_desc_new(272629760, 1500, 0, 1, 0);
+    let r2: NetDmaRing = net_rx_poll_desc(net_tx_submit_desc(ring, dma, mmio, tx_desc), dma, rx_desc);
+    let ok: Bool = net_quorum_blackbox_verify(r2, 48);
+    println(netdrv_nic_verdict(r2.tx_packets, r2.rx_packets, ok));
+    return ok;
+}
+
+fn netdrv_run_pktio() -> Bool {
+    let ring: PktRing = pktio_open_gated(netdrv_reg64(netdrv_ncaps()), 1, 3, 64, true, 100, 200);
+    let sent: PktRing = pktio_tx_batch(ring, 8, 400);
+    let dr: PktRing = pktio_rx_drain(sent, 4);
+    let ok: Bool = dr.batched == 4 && dr.tls_active && pktio_crc16_desc(dr.ring_id, dr.head_idx) > 0;
+    println(netdrv_verdict("pktio", ok, "batched=" + dr.batched.to_string() + " tls=on"));
+    return ok;
+}
+
+fn netdrv_run_rdma() -> Bool {
+    let qp: RdmaQpGuard = rdma_qp_admit_gated(netdrv_reg64(netdrv_ncaps()), 1, 3, 66048, 7,
+        305419896, 2596069104);
+    let posted: RdmaQpGuard = rdma_qp_post_send(rdma_qp_bind_mr(qp, 305419896, 2596069104),
+        4096, 2596069104);
+    let ok: Bool = rdma_qp_verify(posted);
+    println(netdrv_qp_verdict(posted.qp_num, posted.posted, ok));
+    return ok;
+}
+
+fn netdrv_run_bus() -> Bool {
+    let tcaps: Int = netdrv_ncaps() | (1 << oo_cap_bit_index("TimeCap"));
+    let seal: Int = oo_tsn_canfd_seal_gated(netdrv_reg64(tcaps), 1, 3, 1000000, 255, 703);
+    let ok: Bool = oo_tsn_canfd_verify(seal, 703);
+    println(netdrv_bus_verdict(seal, 703));
+    return ok;
+}
+
+pub fn netdrv_run(mode: String, dma: &DmaCap, mmio: &MmioCap, irq: &IrqCap) -> Result[Int, String] {
+    let kind: String = netdrv_verb_kind(mode);
+    if kind == "" { println("ERR: unknown driver verb " + mode);
+    return Ok(2);
+    }
+    let ok: Bool = if kind == "nic" { netdrv_run_nic(dma, mmio) } else if kind == "pktio" {
+        netdrv_run_pktio() } else if kind == "rdma" { netdrv_run_rdma() } else if kind == "tsn-canfd" {
+        netdrv_run_bus() } else if kind == "wifi80211" { netdrv_run_wifi(dma, mmio) } else if
+        kind == "bt-hci" { netdrv_run_bt(dma, mmio) } else { netdrv_run_wwan(mmio, irq) };
+    if ok { return Ok(0); }
+    return Ok(1);
+}

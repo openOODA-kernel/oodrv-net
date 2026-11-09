@@ -1,0 +1,206 @@
+// # oodrv-net CLI & Self-Test Entrypoint
+//
+// Logline: Multi-call CLI driver; zero-copy NIC RX/TX DMA rings, pktio TLS/pacing rings,
+//   RDMA/RoCEv2 QP+MR guard, Wi-Fi 802.11, Bluetooth HCI, 5G/LTE WWAN, and TSN/CAN-FD self-test.
+// Setup: Declared capabilities: FsReadCap, FsWriteCap, DmaCap, MmioCap, IrqCap.
+//   Imports oostd core/ooda + sec/* via the ring and guard pages.
+// Beats:
+//   1. Resolve the persona from argv[0] or a leading persona subcommand.
+//   2. Run the NIC DMA ring, pktio ring, RDMA QP+MR guard, TSN/CAN-FD, and radio driver self-test.
+//   3. Emit deterministic human or JSON verification results.
+
+import "anchor.oo";
+import "cli/about.oo";
+import "core/fs/fsprobe.oo";
+import "core/fs/manifest.oo";
+import "core/fs/state.oo";
+import "cli/ootheme.oo";
+import "core/fs/gate.oo";
+import "core/netdrv_run.oo";
+import "oostd/fs/os/fs.oo";
+import "oostd/sec/capreg.oo";
+import "oostd/core/primitives/byte.oo";
+
+fn cli_argv0(fs: &FsReadCap) -> String {
+    let r: Result[String, String] = fs_read_file(fs, "/proc/self/cmdline");
+    if r.is_err() { return "oodrv-net"; }
+    let body: String = match r { Ok(s) => s, Err(_) => "" };
+    let n: Int = bytes_len(body);
+    let mut field: List[Int] = byte_buf_new();
+    let mut i: Int = 0;
+    while i < n && byte_get(body, i) != 0 {
+        field = byte_buf_push(field, byte_get(body, i));
+        i = i + 1;
+    }
+    let mut cut: Int = 0;
+    let mut j: Int = 0;
+    while j < list_len(field) {
+        if byte_buf_get(field, j) == 47 { cut = j + 1; }
+        j = j + 1;
+    }
+    let mut base: List[Int] = byte_buf_new();
+    let mut k: Int = cut;
+    while k < list_len(field) {
+        base = byte_buf_push(base, byte_buf_get(field, k));
+        k = k + 1;
+    }
+    if list_len(base) == 0 { return "oodrv-net"; }
+    return byte_buf_to_str(base);
+}
+
+fn run_netdrv_selftest(dma: &DmaCap, mmio: &MmioCap, irq: &IrqCap) -> Bool {
+    let st0: NetDrvContext = netdrv_init(1, 24576, 128);
+    if netdrv_verify(st0) == false { return false; }
+    let st1: NetDrvContext = netdrv_step(st0, 8, 8192);
+    if st1.active_items != 8 { return false; }
+    let ring0: NetDmaRing = net_dma_ring_init(dma, mmio, 4262461440, 2097152, 2101248, 256);
+    let tx_desc: NetPacketDesc = net_packet_desc_new(268435456, 1514, 1, 8, 100);
+    let rx_desc: NetPacketDesc = net_packet_desc_new(272629760, 1500, 0, 1, 0);
+    let ring2: NetDmaRing = net_rx_poll_desc(net_tx_submit_desc(ring0, dma, mmio, tx_desc), dma,
+        rx_desc);
+    if ring2.tx_packets != 1 || ring2.rx_packets != 1 || net_quorum_blackbox_verify(ring2, 48) == false { return false; }
+    let ncaps: Int = net_dma_req_caps() | (1 << oo_cap_bit_index("NetCap"));
+    let tcaps: Int = ncaps | (1 << oo_cap_bit_index("TimeCap"));
+    let pk: PktRing = pktio_tx_batch(pktio_open_gated(oo_cap_reg64_pack(1, 7, 0, ncaps), 1, 3, 64, true, 100, 200), 8, 400);
+    if pk.head_idx == 0 || pk.tls_active == false || pktio_pacing_bdp_bytes(100, 200) <= 0 { return false; }
+    let qp: RdmaQpGuard = rdma_qp_admit_gated(oo_cap_reg64_pack(1, 7, 0, ncaps), 1, 3, 66048, 7, 305419896, 2596069104);
+    if qp.admitted == false || qp.qp_num != 66048 { return false; }
+    let tsl: Int = oo_tsn_canfd_seal_gated(oo_cap_reg64_pack(1, 7, 0, tcaps), 1, 3, 1000000, 255, 703);
+    if tsl <= 0 || oo_canfd_crc16_frame(703, 64) <= 0 || pktio_flow_hash("10.0.0.1:443:tcp") <= 0 { return false; }
+    let s0: WifiStation = wifi80211_scan_add(wifi80211_init(dma, mmio, 6), wifi80211_parse_beacon(0, 4096, 6, 0 - 42));
+    if wifi80211_verify(s0) == false { return false; }
+    let c0: BtHciController = bt_hci_set_state(bt_hci_init(dma, mmio, 1), 1);
+    if bt_hci_verify(bt_hci_acl(bt_hci_set_state(bt_hci_evt(bt_hci_cmd(c0, 2053), 13), 2), 128)) == false { return false; }
+    let m0: WwanModem = wwan_pdp_activate(wwan_register(wwan_queue(wwan_init(mmio, irq, 1), 3), 2, 0 - 71), 8);
+    if wwan_verify(m0) == false { return false; }
+    let td: OoThemePalette = ootheme_resolve("ooda-dark");
+    if ootheme_verify(td) == false || ootheme_verify(ootheme_resolve("ooda-light")) == false { return false; }
+    if ootheme_verify(ootheme_resolve("1982")) == false ||
+        ootheme_verify(ootheme_resolve("high-contrast")) == false { return false; }
+    if ootheme_verify(ootheme_resolve("no-color")) == false || ootheme_known("bogus-theme") { return false; }
+    return ootheme_tui_frame(td, "oodrv-net", "0.6.1", "kernel", "PASS") == ootheme_tui_frame(td, "oodrv-net", "0.6.1",
+        "kernel", "PASS") && ootheme_json(td) == ootheme_json(td);
+}
+
+fn run_manifest_mode(fs_r: &FsReadCap, p: Persona, mpath: String, mode: String) -> Result[Int, String] {
+    let m: NetManifest = netdrv_manifest_load(fs_r, mpath);
+    if m.code != 0 { println("ERR: " + p.name + " manifest " + mpath + " code=" + m.code.to_string());
+    return Ok(1);
+    }
+    if mode == "json" { println(persona_json(p, m.count));
+    return Ok(0);
+    }
+    if mode == "verify" { println(p.name + " " + p.version + ": verify OK (manifest " + m.count.to_string() + " records)");
+    return Ok(0);
+    }
+    if mode == "inspect" {
+        println(persona_json(p, m.count));
+        let mut ri: Int = 0;
+        while ri < m.count {
+            println(netdrv_record_desc(list_get(m.records, ri)));
+            ri = ri + 1;
+        }
+        println(p.name + " manifest " + mpath + " records=" + m.count.to_string() + " ok");
+        return Ok(0);
+    }
+    println(p.name + " " + p.version + ": manifest " + mpath + " records=" + m.count.to_string() + " ok");
+    return Ok(0);
+}
+
+fn run_inspect_mode(fs_r: &FsReadCap, p: Persona, operand: String) -> Result[Int, String] {
+    let rec: NetDrvContext = netdrv_record_parse(1, 2, 3, 4, 5);
+    println(persona_json(p, p.active));
+    println(netdrv_record_desc(rec));
+    let target: String = if chars_len(operand) == 0 { netdrv_fs_default_path() } else { operand };
+    let probe: NetFsProbe = netdrv_fs_probe(fs_r, target);
+    println(netdrv_fs_render(probe));
+    println(netdrv_fs_json(probe));
+    let observed: Int = probe.entry_count + probe.line_count;
+    let seen: NetDrvContext = netdrv_observe(netdrv_init(1, 24576, 65536), observed, probe.read_len, 8192);
+    println("observed_items=" + seen.active_items.to_string());
+    return Ok(0);
+}
+
+fn netdrv_has_flag(args: List[String], flag: String) -> Bool {
+    let mut i: Int = 0;
+    while i < list_len(args) {
+        if list_get(args, i) == flag { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn run_theme_mode(p: Persona, operand: String, args: List[String]) -> Result[Int, String] {
+    let tname: String = if chars_len(operand) == 0 { "ooda-dark" } else { operand };
+    if ootheme_known(tname) == false { println("ERR " + p.name + ": unknown theme " + tname);
+    return Err("unknown theme");
+    }
+    let pal: OoThemePalette = ootheme_resolve(tname);
+    if netdrv_has_flag(args, "--json") { println(ootheme_json(pal));
+    return Ok(0);
+    }
+    println(ootheme_tui_frame(pal, p.name, p.version, p.layer, "PASS"));
+    return Ok(0);
+}
+
+fn run_load_mode(fs_r: &FsReadCap, p: Persona, operand: String) -> Result[Int, String] {
+    if chars_len(operand) == 0 { println("ERR " + p.name + ": load needs a path operand");
+    return Err("missing operand");
+    }
+    let loaded: NetFsProbe = netdrv_fs_load(fs_r, operand);
+    if loaded.kind != "file" { println("ERR " + p.name + ": not a readable file " + operand);
+    return Err("not a readable file");
+    }
+    println(netdrv_fs_render(loaded));
+    println(loaded.content);
+    return Ok(0);
+}
+
+pub fn main(fs_r: &FsReadCap, fs_w: &FsWriteCap, dma: &DmaCap, mmio: &MmioCap, irq: &IrqCap,
+    args: List[String]) -> Result[Int, String] {
+    if oodrv_net_args_refused(args) { return oodrv_net_refuse_traversal(); }
+    let disp: PersonaDispatch = persona_resolve(cli_argv0(fs_r), args);
+    if disp.action == "error" {
+        println("ERR: " + disp.persona.name + ": " + disp.message + " (fail closed)");
+        return Ok(2);
+    }
+    if disp.action == "usage" {
+        println("ERR: " + disp.persona.name + ": " + disp.message + " (usage fault)");
+        return Ok(2);
+    }
+    let p: Persona = disp.persona;
+    let mode: String = disp.mode;
+    if mode == "about" { return persona_about_mode(p, args);
+    }
+    if chars_len(disp.savepath) > 0 { return kstate_save(fs_w, fs_r, p.name, p.version, disp.savepath); }
+    if mode == "help" {
+        println(p.name + " " + p.version + " - " + p.desc);
+        println("usage: " + p.name + " " + p.usage_tail);
+        return Ok(0);
+    }
+    if mode == "version" { println(p.name + " " + p.version);
+    return Ok(0);
+    }
+    if netdrv_verb_kind(mode) != "" { return netdrv_run(mode, dma, mmio, irq); }
+    if run_netdrv_selftest(dma, mmio, irq) == false { println("FAIL: " + p.name + " self-test failed");
+    return Ok(1);
+    }
+    if chars_len(disp.manifest) > 0 { return run_manifest_mode(fs_r, p, disp.manifest, mode); }
+    if mode == "json" { println(persona_json(p, p.active));
+    return Ok(0);
+    }
+    if mode == "status" { println(p.name + " " + p.version + ": PASS (" + p.desc + ")");
+    return Ok(0);
+    }
+    if mode == "verify" { println(p.name + " " + p.version + ": verify OK (nic+pktio+rdma+tsn-canfd+wifi+bt+wwan)");
+    return Ok(0);
+    }
+    if mode == "inspect" { return run_inspect_mode(fs_r, p, disp.operand); }
+    if mode == "load" { return run_load_mode(fs_r, p, disp.operand); }
+    if mode == "theme" || mode == "tui" { return run_theme_mode(p, disp.operand, args); }
+    if mode == "selftest" { println(p.name + " " + p.version + ": PASS (self-test)");
+    return Ok(0);
+    }
+    println(p.name + " " + p.version + ": PASS (" + p.desc + ")");
+    return Ok(0);
+}

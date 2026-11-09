@@ -1,0 +1,63 @@
+// # oodrv-net About Descriptor
+//
+// Logline: Renders the Binary, Organization, Summary, Subcommands, Capabilities, and Theme of an oodrv-net persona.
+//
+// Setup: Declared capability: None. Pure string building over the persona record.
+//
+// Beats:
+//   1. Report the binary name and the organization that owns the repository.
+//   2. Report the persona summary, the accepted subcommand surface, the declared capability set, and the ootheme palette.
+//   3. Refuse an unregistered persona rather than printing an empty descriptor.
+import "cli/dispatch.oo";
+import "cli/ootheme.oo";
+
+pub fn persona_caps(name: String) -> String {
+    let caps: String = "FsReadCap, FsWriteCap, DmaCap, MmioCap, IrqCap, FrameCap, NetCap, TcpCap, UdpCap, TimeCap";
+    if name == "oodrv-net" { return caps; }
+    if name == "oodrv-rdma" { return caps; }
+    if name == "oodrv-wireless" { return caps; }
+    if name == "oodrv-bus" { return caps; }
+    return "";
+}
+pub fn persona_subcommands() -> String {
+    return "oodrv-net, oodrv-rdma, oodrv-wireless, oodrv-bus, status, verify, inspect, load, theme, " +
+        "about, nic, pktio, rdma, tsn-canfd, wifi80211, bt-hci, wwan, " +
+        "--manifest, --save, --json, --self-test, --tui, --help, --version";
+}
+pub fn persona_about(p: Persona) -> String {
+    let caps: String = persona_caps(p.name);
+    if chars_len(caps) == 0 { return "";
+    }
+    return "Binary: " + p.name + "\n" + "Organization: openOODA-kernel\n" + "Summary: " + p.desc + "\n" +
+        "Subcommands: " + persona_subcommands() + "\n" + "Capabilities: " + caps + "\n" +
+        "Theme: " + ootheme_resolve("ooda-dark").name;
+}
+pub fn persona_about_json(p: Persona) -> String {
+    let caps: String = persona_caps(p.name);
+    if chars_len(caps) == 0 { return "";
+    }
+    return "{\"binary\":\"" + p.name + "\",\"organization\":\"openOODA-kernel\"," +
+        "\"summary\":\"" + p.desc + "\",\"subcommands\":\"" + persona_subcommands() +
+        "\",\"capabilities\":\"" + caps + "\",\"theme\":\"" + ootheme_resolve("ooda-dark").name + "\"}";
+}
+pub fn persona_about_json_flag(args: List[String]) -> Bool {
+    let mut i: Int = 0;
+    while i < list_len(args) {
+        if list_get(args, i) == "--json" { return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+pub fn persona_about_mode(p: Persona, args: List[String]) -> Result[Int, String] {
+    let about: String = persona_about(p);
+    if chars_len(about) == 0 { println("ERR: " + p.name + ": unknown persona (fail closed)");
+    return Ok(2);
+    }
+    if persona_about_json_flag(args) { println(persona_about_json(p));
+    return Ok(0);
+    }
+    println(about);
+    return Ok(0);
+}

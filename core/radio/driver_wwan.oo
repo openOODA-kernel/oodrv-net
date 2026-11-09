@@ -1,0 +1,56 @@
+// # openOODA 5G/LTE WWAN Baseband Driver
+//
+// Logline: 5G/LTE WWAN baseband driver tracking MBIM/QMI command queues,
+//   network registration state, RSSI, and PDP bearer activation.
+// Setup: Declared capabilities: MmioCap, IrqCap. Imports oostd sec/pqc
+//   for integrity sealing.
+// Beats:
+//   1. Initialize the modem with bounded command-queue depth.
+//   2. Queue MBIM/QMI commands and advance registration state 0..4.
+//   3. Activate up to 8 PDP bearers with RSSI bounds fail-closed.
+
+import "oostd/sec/pqc.oo";
+
+type WwanModem = struct {
+    modem_id: Int,
+    cmd_queue: Int,
+    reg_state: Int,
+    rssi_dbm: Int,
+    pdp_bearers: Int,
+    seal: Int
+};
+
+pub fn wwan_init(mmio: &MmioCap, irq: &IrqCap, modem_id: Int) -> WwanModem {
+    let _mmio: &MmioCap = mmio;
+    let _irq: &IrqCap = irq;
+    let safe_id: Int = if modem_id < 0 || modem_id > 15 { 0 } else { modem_id };
+    return WwanModem { modem_id: safe_id, cmd_queue: 0, reg_state: 0, rssi_dbm: 0 - 110,
+        pdp_bearers: 0, seal: 0 };
+}
+
+pub fn wwan_queue(m: WwanModem, cmd: Int) -> WwanModem {
+    if cmd <= 0 || cmd > 255 || m.cmd_queue >= 32 { return m; }
+    let seal: Int = oo_pqc_sha3_round(cmd, m.cmd_queue + 1);
+    return WwanModem { modem_id: m.modem_id, cmd_queue: m.cmd_queue + 1, reg_state: m.reg_state,
+        rssi_dbm: m.rssi_dbm, pdp_bearers: m.pdp_bearers, seal: seal };
+}
+
+pub fn wwan_register(m: WwanModem, reg_state: Int, rssi_dbm: Int) -> WwanModem {
+    if reg_state < 0 || reg_state > 4 || rssi_dbm < 0 - 120 || rssi_dbm > 0 - 30 { return m; }
+    if reg_state > m.reg_state + 2 { return m; }
+    return WwanModem { modem_id: m.modem_id, cmd_queue: m.cmd_queue, reg_state: reg_state,
+        rssi_dbm: rssi_dbm, pdp_bearers: m.pdp_bearers, seal: m.seal };
+}
+
+pub fn wwan_pdp_activate(m: WwanModem, bearer_id: Int) -> WwanModem {
+    if m.reg_state < 2 || bearer_id <= 0 || bearer_id > 16 || m.pdp_bearers >= 8 { return m; }
+    let seal2: Int = oo_pqc_sha3_round(m.seal, bearer_id);
+    return WwanModem { modem_id: m.modem_id, cmd_queue: m.cmd_queue, reg_state: m.reg_state,
+        rssi_dbm: m.rssi_dbm, pdp_bearers: m.pdp_bearers + 1, seal: seal2 };
+}
+
+pub fn wwan_verify(m: WwanModem) -> Bool {
+    if m.modem_id < 0 || m.modem_id > 15 || m.cmd_queue < 0 || m.cmd_queue > 32 { return false; }
+    if m.reg_state < 0 || m.reg_state > 4 || m.pdp_bearers < 0 || m.pdp_bearers > 8 { return false; }
+    return m.cmd_queue > 0 && m.reg_state >= 2 && m.pdp_bearers > 0;
+}

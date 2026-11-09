@@ -1,0 +1,22 @@
+// # oodrv-net Core Subsystem Anchor
+//
+// Logline: Re-exports the net driver state machine, zero-copy NIC RX/TX
+//   DMA rings, pktio rings, RDMA QP+MR guard, TSN/CAN-FD bus,
+//   and the Wi-Fi/Bluetooth/WWAN radio pages.
+// Setup: Pure subsystem anchor shim for oodrv-net core pages.
+// Beats:
+//   1. Export the core network state machine and wired driver pages.
+//   2. Export the RDMA queue-pair guard, TSN/CAN-FD bus, and radio driver pages.
+//   3. Stay a pure import shim with zero functions and zero capability demands.
+
+import "engine.oo";
+import "netdrv_run.oo";
+import "core/net/driver_net_dma_ring.oo";
+import "core/net/pktio_ring.oo";
+import "core/net/rdma_qp_guard.oo";
+import "core/net/tsn_canfd.oo";
+import "core/net/netdrv_wired_verdicts.oo";
+import "core/radio/driver_wifi80211.oo";
+import "core/radio/driver_bt_hci.oo";
+import "core/radio/driver_wwan.oo";
+import "core/radio/netdrv_radio_verdicts.oo";

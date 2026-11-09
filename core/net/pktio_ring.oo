@@ -1,0 +1,85 @@
+// # openOODA Packet I/O Ring: Batched Kernel Packet Mmap Rings, Pacing & TLS Offload
+//
+// Logline: Packet I/O ring supporting batched TX/RX, TCP pacing offload,
+//   and kTLS hardware crypto record offload with CapReg64 admission.
+// Setup: Declared capability: NetCap. Imports oostd core/io, core/math
+//   checksum/hash/fixed-point, and sec/pqc primitives.
+// Beats:
+//   1. Open a shared 64-slot packet mmap ring under NetCap admission with sealed state.
+//   2. Compute FNV-1a 5-tuple flow hashing and Q16.16 pacing BDP windows for offload.
+//   3. Enqueue/dequeue batched packets with sealed kernel descriptors.
+
+import "oostd/sec/capreg.oo";
+import "oostd/sec/pqc.oo";
+import "oostd/core/io/checksum_grp/checksum_crc16.oo";
+import "oostd/core/math/fnv1a_grp/fnv1a_hash.oo";
+import "oostd/core/math/fixed_grp/fixed_point_q16_16.oo";
+
+type PktRing = struct {
+    ring_id: Int,
+    slots: Int,
+    head_idx: Int,
+    tail_idx: Int,
+    batched: Int,
+    tls_active: Bool,
+    pacing_seal: Int
+};
+
+pub fn pktio_flow_hash(flow_key: String) -> Int {
+    return fnv1a32_string(flow_key);
+}
+
+pub fn pktio_pacing_bdp_bytes(bw_mbps: Int, rtt_us: Int) -> Int {
+    let bw: Q16 = q16_from_int(bw_mbps);
+    let rtt: Q16 = q16_from_int(rtt_us);
+    let bdp: Int = q16_to_int(q16_mul(bw, rtt));
+    return (bdp * 125) / 1000;
+}
+
+pub fn pktio_req_caps() -> Int {
+    return 1 << oo_cap_bit_index("NetCap");
+}
+
+pub fn pktio_ring_admit(reg64: Int, epoch: Int, req_rights: Int) -> Int {
+    if reg64 == 0 { return -13; }
+    if epoch < 0 { return -22; }
+    if req_rights < 0 || req_rights > 255 { return -22; }
+    let req_caps: Int = pktio_req_caps();
+    if oo_cap_reg64_check(reg64, epoch, req_rights, req_caps) == false { return -13; }
+    return 0;
+}
+
+pub fn pktio_open_gated(reg64: Int, epoch: Int, req_rights: Int, slots: Int, tls_enable: Bool,
+    bw_mbps: Int, rtt_us: Int) -> PktRing {
+    if pktio_ring_admit(reg64, epoch, req_rights) != 0 {
+        return PktRing { ring_id: 0, slots: 0, head_idx: 0, tail_idx: 0, batched: 0,
+            tls_active: false, pacing_seal: 0 };
+    }
+    let bdp: Int = pktio_pacing_bdp_bytes(bw_mbps, rtt_us);
+    let seal: Int = oo_pqc_sha3_round(reg64 ^ bdp, epoch + slots);
+    return PktRing { ring_id: 7, slots: slots, head_idx: 0, tail_idx: 0, batched: 0,
+        tls_active: tls_enable, pacing_seal: seal };
+}
+
+pub fn pktio_tx_batch(ring: PktRing, n_pkts: Int, avg_len: Int) -> PktRing {
+    if n_pkts <= 0 || avg_len <= 0 || ring.slots == 0 { return ring; }
+    let new_tail: Int = (ring.tail_idx + n_pkts) % ring.slots;
+    let seal2: Int = oo_pqc_sha3_round(ring.pacing_seal, n_pkts * avg_len);
+    return PktRing { ring_id: ring.ring_id, slots: ring.slots, head_idx: ring.head_idx,
+        tail_idx: new_tail, batched: ring.batched + n_pkts, tls_active: ring.tls_active,
+        pacing_seal: seal2 };
+}
+
+pub fn pktio_rx_drain(ring: PktRing, n_pkts: Int) -> PktRing {
+    if n_pkts <= 0 || n_pkts > ring.batched || ring.slots == 0 { return ring; }
+    let new_head: Int = (ring.head_idx + n_pkts) % ring.slots;
+    return PktRing { ring_id: ring.ring_id, slots: ring.slots, head_idx: new_head,
+        tail_idx: ring.tail_idx, batched: ring.batched - n_pkts, tls_active: ring.tls_active,
+        pacing_seal: ring.pacing_seal };
+}
+
+pub fn pktio_crc16_desc(ring_id: Int, desc_idx: Int) -> Int {
+    let bytes: List[Int] = list_push(list_push(list_push(list_new(), ring_id & 255),
+        (ring_id >> 8) & 255), desc_idx & 255);
+    return crc16_digest(crc16_update(crc16_new(), bytes));
+}

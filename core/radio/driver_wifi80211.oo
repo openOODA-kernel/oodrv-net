@@ -1,0 +1,75 @@
+// # openOODA Wi-Fi 802.11 Station Driver
+//
+// Logline: Wi-Fi 802.11 station driver tracking beacon scans, RSSI,
+//   PS-Poll power-save queues, and association state under sealed records.
+// Setup: Declared capabilities: DmaCap, MmioCap. Imports oostd sec/pqc
+//   for integrity sealing.
+// Beats:
+//   1. Initialize a station on a bounded 2.4/5 GHz channel.
+//   2. Parse beacons, validating frame subtype, channel, and RSSI bounds.
+//   3. Track scan count, PS-Poll queue depth, and association fail-closed.
+
+import "oostd/sec/pqc.oo";
+
+type WifiBeacon = struct {
+    frame_type: Int,
+    phy_addr: Int,
+    channel: Int,
+    rssi_dbm: Int,
+    valid: Bool
+};
+
+type WifiStation = struct {
+    nic_id: Int,
+    channel: Int,
+    scan_count: Int,
+    pspoll_queue: Int,
+    last_rssi: Int,
+    associated: Bool,
+    seal: Int
+};
+
+pub fn wifi80211_init(dma: &DmaCap, mmio: &MmioCap, channel: Int) -> WifiStation {
+    let _dma: &DmaCap = dma;
+    let _mmio: &MmioCap = mmio;
+    let ok_ch: Bool = (channel >= 1 && channel <= 14) || (channel >= 36 && channel <= 165);
+    let safe_ch: Int = if ok_ch { channel } else { 1 };
+    return WifiStation { nic_id: 11, channel: safe_ch, scan_count: 0, pspoll_queue: 0,
+        last_rssi: 0 - 100, associated: false, seal: 0 };
+}
+
+pub fn wifi80211_parse_beacon(frame_type: Int, phy_addr: Int, channel: Int,
+    rssi_dbm: Int) -> WifiBeacon {
+    let ok_ch: Bool = (channel >= 1 && channel <= 14) || (channel >= 36 && channel <= 165);
+    let ok: Bool = frame_type >= 0 && frame_type <= 15 && phy_addr > 0 && phy_addr % 4096 == 0 &&
+        ok_ch && rssi_dbm >= 0 - 90 && rssi_dbm <= 0 - 10;
+    return WifiBeacon { frame_type: frame_type, phy_addr: phy_addr, channel: channel,
+        rssi_dbm: rssi_dbm, valid: ok };
+}
+
+pub fn wifi80211_scan_add(sta: WifiStation, beacon: WifiBeacon) -> WifiStation {
+    if beacon.valid == false { return sta; }
+    let seal: Int = oo_pqc_sha3_round(beacon.channel ^ beacon.phy_addr, beacon.rssi_dbm + 100);
+    return WifiStation { nic_id: sta.nic_id, channel: sta.channel, scan_count: sta.scan_count + 1,
+        pspoll_queue: sta.pspoll_queue, last_rssi: beacon.rssi_dbm, associated: sta.associated,
+        seal: seal };
+}
+
+pub fn wifi80211_pspoll(sta: WifiStation, queued: Int) -> WifiStation {
+    if queued < 0 || queued > 8 { return sta; }
+    return WifiStation { nic_id: sta.nic_id, channel: sta.channel, scan_count: sta.scan_count,
+        pspoll_queue: queued, last_rssi: sta.last_rssi, associated: sta.associated, seal: sta.seal };
+}
+
+pub fn wifi80211_associate(sta: WifiStation, beacon: WifiBeacon) -> WifiStation {
+    if sta.scan_count <= 0 || beacon.valid == false || beacon.channel != sta.channel { return sta; }
+    let seal2: Int = oo_pqc_sha3_round(sta.seal, beacon.phy_addr);
+    return WifiStation { nic_id: sta.nic_id, channel: sta.channel, scan_count: sta.scan_count,
+        pspoll_queue: sta.pspoll_queue, last_rssi: beacon.rssi_dbm, associated: true, seal: seal2 };
+}
+
+pub fn wifi80211_verify(sta: WifiStation) -> Bool {
+    if sta.nic_id <= 0 || sta.channel <= 0 { return false; }
+    if sta.scan_count < 0 || sta.pspoll_queue < 0 || sta.pspoll_queue > 8 { return false; }
+    return sta.scan_count > 0;
+}

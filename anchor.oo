@@ -1,0 +1,16 @@
+// # oodrv-net Root Project Anchor
+//
+// Logline: oodrv-net root module anchor re-exporting the zero-copy NIC/RDMA/wireless/TSN-CAN-FD subsystem and multi-call dispatch pages.
+// Setup: Root module anchor re-exporting the component identity page.
+// Beats:
+//   1. Re-export the core subsystem anchor and persona dispatch page.
+//   2. Re-export the RDMA queue-pair guard, pktio ring, TSN/CAN-FD bus pages, and the component identity accessors.
+//   3. Keep the public entry surface minimal and deterministic.
+
+import "core/anchor.oo";
+import "cli/dispatch.oo";
+import "cli/ootheme.oo";
+import "core/net/pktio_ring.oo";
+import "core/net/rdma_qp_guard.oo";
+import "core/net/tsn_canfd.oo";
+import "cli/identity.oo";
