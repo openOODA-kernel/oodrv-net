@@ -76,7 +76,9 @@ pub fn net_tx_submit_desc(ring: NetDmaRing, dma: &DmaCap, mmio: &MmioCap,
     if desc.buffer_phys == 0 || desc.pkt_len == 0 || (desc.status & 8) == 0 { return ring; }
     let _dma: &DmaCap = dma;
     let _mmio: &MmioCap = mmio;
-    let war: Int = oo_warrant_pack(1, req_caps, 7);
+    // oo_warrant_check takes the warrant BITS (0..255), not a packed register:
+    // a packed reg64 fails oo_cap_reg64_args_ok and the gate always denies.
+    let war: Int = 7;
     if oo_warrant_check(reg64, 1, req_caps, war) == false { return ring; }
     let words: List[Int] = oo_wire_encode(14, 1, reg64, desc.pkt_len, desc.buffer_phys, desc.vlan,
         0, 0);

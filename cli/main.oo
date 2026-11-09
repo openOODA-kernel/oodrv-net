@@ -61,7 +61,8 @@ fn run_netdrv_selftest(dma: &DmaCap, mmio: &MmioCap, irq: &IrqCap) -> Bool {
     if ring2.tx_packets != 1 || ring2.rx_packets != 1 || net_quorum_blackbox_verify(ring2, 48) == false { return false; }
     let ncaps: Int = net_dma_req_caps() | (1 << oo_cap_bit_index("NetCap"));
     let tcaps: Int = ncaps | (1 << oo_cap_bit_index("TimeCap"));
-    let pk: PktRing = pktio_tx_batch(pktio_open_gated(oo_cap_reg64_pack(1, 7, 0, ncaps), 1, 3, 64, true, 100, 200), 8, 400);
+    let pk0: PktRing = pktio_open_gated(oo_cap_reg64_pack(1, 7, 0, ncaps), 1, 3, 64, true, 100, 200);
+    let pk: PktRing = pktio_rx_drain(pktio_tx_batch(pk0, 8, 400), 4);
     if pk.head_idx == 0 || pk.tls_active == false || pktio_pacing_bdp_bytes(100, 200) <= 0 { return false; }
     let qp: RdmaQpGuard = rdma_qp_admit_gated(oo_cap_reg64_pack(1, 7, 0, ncaps), 1, 3, 66048, 7, 305419896, 2596069104);
     if qp.admitted == false || qp.qp_num != 66048 { return false; }

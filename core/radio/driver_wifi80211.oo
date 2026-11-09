@@ -32,7 +32,9 @@ type WifiStation = struct {
 pub fn wifi80211_init(dma: &DmaCap, mmio: &MmioCap, channel: Int) -> WifiStation {
     let _dma: &DmaCap = dma;
     let _mmio: &MmioCap = mmio;
-    let ok_ch: Bool = (channel >= 1 && channel <= 14) || (channel >= 36 && channel <= 165);
+    let ok_ch: Bool = (channel >= 1 && channel <= 14) ||
+        (channel >= 36 && channel <= 144 && channel % 4 == 0) || channel == 149 || channel == 153 ||
+        channel == 157 || channel == 161 || channel == 165;
     let safe_ch: Int = if ok_ch { channel } else { 1 };
     return WifiStation { nic_id: 11, channel: safe_ch, scan_count: 0, pspoll_queue: 0,
         last_rssi: 0 - 100, associated: false, seal: 0 };
@@ -40,7 +42,9 @@ pub fn wifi80211_init(dma: &DmaCap, mmio: &MmioCap, channel: Int) -> WifiStation
 
 pub fn wifi80211_parse_beacon(frame_type: Int, phy_addr: Int, channel: Int,
     rssi_dbm: Int) -> WifiBeacon {
-    let ok_ch: Bool = (channel >= 1 && channel <= 14) || (channel >= 36 && channel <= 165);
+    let ok_ch: Bool = (channel >= 1 && channel <= 14) ||
+        (channel >= 36 && channel <= 144 && channel % 4 == 0) || channel == 149 || channel == 153 ||
+        channel == 157 || channel == 161 || channel == 165;
     let ok: Bool = frame_type >= 0 && frame_type <= 15 && phy_addr > 0 && phy_addr % 4096 == 0 &&
         ok_ch && rssi_dbm >= 0 - 90 && rssi_dbm <= 0 - 10;
     return WifiBeacon { frame_type: frame_type, phy_addr: phy_addr, channel: channel,
