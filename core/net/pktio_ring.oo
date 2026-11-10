@@ -41,12 +41,10 @@ pub fn pktio_req_caps() -> Int {
 }
 
 pub fn pktio_ring_admit(reg64: Int, epoch: Int, req_rights: Int) -> Int {
-    if reg64 == 0 { return -13; }
-    if epoch < 0 { return -22; }
-    if req_rights < 0 || req_rights > 255 { return -22; }
     let req_caps: Int = pktio_req_caps();
-    if oo_cap_reg64_check(reg64, epoch, req_rights, req_caps) == false { return -13; }
-    return 0;
+    let v: Int = oo_cap_admit(reg64, epoch, req_rights, req_caps);
+    if v == 0 - 1 { return 0 - 13; }
+    return v;
 }
 
 pub fn pktio_open_gated(reg64: Int, epoch: Int, req_rights: Int, slots: Int, tls_enable: Bool,

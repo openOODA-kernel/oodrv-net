@@ -13,13 +13,8 @@ import "oostd/fs/file/fs_grp/fs_invariants.oo";
 pub fn oodrv_net_path_refused(path: String) -> Bool {
     if chars_len(path) == 0 { return false; }
     if fs_is_dotdot_traversal(path) == 1 { return true; }
-    if str_contains(path, "\n") { return true; }
+    if fs_path_has_ctl(path) { return true; }
     let meta: String = ";|&$`<>";
-    let mut b: Int = 0;
-    while b < bytes_len(path) {
-        if byte_get(path, b) == 0 { return true; }
-        b = b + 1;
-    }
     let mut i: Int = 0;
     while i < chars_len(path) {
         let c: String = char_at(path, i);
@@ -33,8 +28,7 @@ pub fn oodrv_net_args_refused(args: List[String]) -> Bool {
     let mut i: Int = 0;
     while i < list_len(args) {
         let a: String = list_get(args, i);
-        if str_contains(a, "..") { return true; }
-        if str_contains(a, "\n") { return true; }
+        if !oo_arg_ok(a) { return true; }
         i = i + 1;
     }
     return false;

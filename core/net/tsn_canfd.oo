@@ -25,12 +25,10 @@ pub fn oo_tsn_canfd_req_caps() -> Int {
 }
 
 pub fn oo_tsn_canfd_admit(reg64: Int, epoch: Int, req_rights: Int) -> Int {
-    if reg64 == 0 { return -13; }
-    if epoch < 0 { return -22; }
-    if req_rights < 0 || req_rights > 255 { return -22; }
     let req_caps: Int = oo_tsn_canfd_req_caps();
-    if oo_cap_reg64_check(reg64, epoch, req_rights, req_caps) == false { return -13; }
-    return 0;
+    let v: Int = oo_cap_admit(reg64, epoch, req_rights, req_caps);
+    if v == 0 - 1 { return 0 - 13; }
+    return v;
 }
 
 pub fn oo_tsn_tas_window_new(cycle_ns: Int, gcl_mask: Int, open_slots: Int) -> TsnTasWindow {
