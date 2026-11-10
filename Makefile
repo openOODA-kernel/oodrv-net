@@ -17,7 +17,7 @@ TESTBIN := bin/test_oodrv-net
 TESTBIN2 := bin/test_oodrv-net-refusal
 REPO_NAME := oodrv-net
 VER := 0.6.1
-SRC := cli/main.oo anchor.oo cli/dispatch.oo cli/about.oo cli/identity.oo cli/ootheme.oo core/anchor.oo core/engine.oo core/netdrv_run.oo core/net/driver_net_dma_ring.oo core/net/pktio_ring.oo core/net/rdma_qp_guard.oo core/net/tsn_canfd.oo core/net/netdrv_wired_verdicts.oo core/radio/driver_wifi80211.oo core/radio/driver_bt_hci.oo core/radio/driver_wwan.oo core/radio/netdrv_radio_verdicts.oo core/fs/fsprobe.oo core/fs/gate.oo core/fs/manifest.oo core/fs/state.oo tests/test_functional.oo tests/test_refusal.oo
+SRC := cli/main.oo anchor.oo cli/dispatch.oo cli/about.oo cli/identity.oo core/anchor.oo core/engine.oo core/netdrv_run.oo core/net/driver_net_dma_ring.oo core/net/pktio_ring.oo core/net/rdma_qp_guard.oo core/net/tsn_canfd.oo core/net/netdrv_wired_verdicts.oo core/radio/driver_wifi80211.oo core/radio/driver_bt_hci.oo core/radio/driver_wwan.oo core/radio/netdrv_radio_verdicts.oo core/fs/fsprobe.oo core/fs/gate.oo core/fs/manifest.oo core/fs/state.oo tests/test_functional.oo tests/test_refusal.oo
 ENV := OODA_COMPILER=$(OODA_COMPILER) OODA_OODAR_ROOT=$(OODA_OODAR_ROOT) OO_LIST_AMBIENT_QUOTA=$(OO_LIST_AMBIENT_QUOTA) OODA_FS_READDIR=$(OODA_FS_READDIR) OODA_FS_WRITEDIR=$(OODA_FS_WRITEDIR) OODA_NO_JAIL=$(OODA_NO_JAIL)
 OO_ALL := $(shell find . -name '*.oo' -not -path './.git/*' -not -path './bin/*' -not -path './.ooda-cache/*' -not -path './dist/*' -not -path './.blackbox/*' | sort)
 

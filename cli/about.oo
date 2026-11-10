@@ -9,7 +9,7 @@
 //   2. Report the persona summary, the accepted subcommand surface, the declared capability set, and the ootheme palette.
 //   3. Refuse an unregistered persona rather than printing an empty descriptor.
 import "cli/dispatch.oo";
-import "cli/ootheme.oo";
+import "oostd/core/app/ui/ootheme.oo";
 
 pub fn persona_caps(name: String) -> String {
     let caps: String = "FsReadCap, FsWriteCap, DmaCap, MmioCap, IrqCap, FrameCap, NetCap, TcpCap, UdpCap, TimeCap";

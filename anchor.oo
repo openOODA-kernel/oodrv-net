@@ -9,7 +9,7 @@
 
 import "core/anchor.oo";
 import "cli/dispatch.oo";
-import "cli/ootheme.oo";
+import "oostd/core/app/ui/ootheme.oo";
 import "core/net/pktio_ring.oo";
 import "core/net/rdma_qp_guard.oo";
 import "core/net/tsn_canfd.oo";
