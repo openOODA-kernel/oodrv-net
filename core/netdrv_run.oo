@@ -14,9 +14,6 @@ import "core/net/pktio_ring.oo";
 import "core/net/rdma_qp_guard.oo";
 import "core/net/tsn_canfd.oo";
 import "core/net/netdrv_wired_verdicts.oo";
-import "core/radio/driver_wifi80211.oo";
-import "core/radio/driver_bt_hci.oo";
-import "core/radio/driver_wwan.oo";
 import "core/radio/netdrv_radio_verdicts.oo";
 import "oostd/sec/capreg.oo";
 

@@ -7,7 +7,6 @@
 //   2. Refuse a NUL byte, a newline, and a shell metacharacter per byte.
 //   3. Admit the path unchanged when every check passes.
 
-import "oostd/core/primitives/byte.oo";
 import "oostd/fs/file/fs_grp/fs_invariants.oo";
 
 pub fn oodrv_net_path_refused(path: String) -> Bool {
