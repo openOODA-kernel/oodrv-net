@@ -1,6 +1,7 @@
 // # oodrv-net Multi-Call Persona Dispatch & CLI Mode Resolver
 //
-// Logline: Compact multi-call persona dispatch and CLI mode resolution for oodrv-net, oodrv-rdma, oodrv-wireless, and oodrv-bus.
+// Logline: Compact multi-call persona dispatch and CLI mode resolution for oodrv-net,
+//   oodrv-rdma, oodrv-wireless, and oodrv-bus.
 // Setup: Declared capability: None. Pure resolution over the persona-ownership.oot tokens without symlink aliases.
 // Beats:
 //   1. Publish the canonical oodrv-net and split-out oodrv-rdma, oodrv-wireless, and oodrv-bus personas.

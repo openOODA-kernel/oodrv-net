@@ -1,6 +1,7 @@
 // # oodrv-net Root Project Anchor
 //
-// Logline: oodrv-net root module anchor re-exporting the zero-copy NIC/RDMA/wireless/TSN-CAN-FD subsystem and multi-call dispatch pages.
+// Logline: oodrv-net root module anchor re-exporting the zero-copy NIC/RDMA/wireless/TSN-CAN-FD
+//   subsystem and multi-call dispatch pages.
 // Setup: Root module anchor re-exporting the component identity page.
 // Beats:
 //   1. Re-export the core subsystem anchor and persona dispatch page.
